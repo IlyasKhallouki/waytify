@@ -1,0 +1,16 @@
+[package]
+name = "waytify"
+description = "Media control for Waybar: MPRIS core, Spotify enrichment, GTK4 popup"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+readme = "../../README.md"
+
+[[bin]]
+name = "waytify"
+path = "src/main.rs"
+
+[dependencies]
