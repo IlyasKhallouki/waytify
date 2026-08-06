@@ -91,11 +91,15 @@ Driving a smooth scrubber by polling `Position` means a D-Bus round trip per
 frame. Instead the daemon records the last position it observed along with the
 instant it observed it, then advances that locally.
 
-The MPRIS spec has a `Seeked` signal for announcing jumps, but players are
-inconsistent about emitting it and Spotify's Linux client is widely reported not
-to. Rather than depend on it, the clock re-anchors on every property change,
-which arrives regardless. `Seeked` is handled when it turns up and nothing
-breaks when it does not.
+MPRIS has a `Seeked` signal for announcing jumps. waytify handles it when it
+arrives but does not depend on it, because support varies between players and a
+clock that only corrects on `Seeked` drifts silently on any player that does not
+send one. Instead it re-anchors on every property change, which arrives either
+way.
+
+It is often repeated that Spotify's Linux client does not emit `Seeked`. That is
+not true, at least of 1.2.92.147, which emits it correctly. See
+[MPRIS behaviour](#measured-mpris-behaviour) for what was actually measured.
 
 Correction interval depends on who is watching, and on whether there is anything
 to correct:
@@ -148,6 +152,43 @@ and treats a surprise as a missing field rather than a missing track.
 The same applies to capability flags. Controls are not gated on `CanSeek` or
 `CanGoNext`, because several players report those incorrectly. waytify shows the
 control, sends the call, and reconciles from whatever state comes back.
+
+## Measured MPRIS behaviour
+
+Guesses about what players do tend to circulate long after they stop being true,
+so this section records observations rather than reputation. Add to it when you
+verify something.
+
+### Spotify 1.2.92.147, Linux desktop client
+
+| Behaviour | Result |
+| --- | --- |
+| Emits `Seeked` | Yes, reliably, once per seek |
+| `Position` advances during playback | Yes, accurately |
+| `Position` while paused on a freshly loaded track | Reports `0` until playback starts |
+| `mpris:trackid` D-Bus type | `s` (string), holding an object-path-shaped value |
+| `SetPosition` signature | `ox`, so it needs a real object path |
+| `mpris:length` type | `t` (unsigned) |
+| `xesam:url` present | Yes, an `open.spotify.com/track/<id>` link |
+| `mpris:artUrl` | An `i.scdn.co` CDN URL |
+| `HasTrackList` | `false` |
+| `Volume` | Exposed and writable |
+| `CanSeek`, `CanGoNext`, `CanControl` | All `true` |
+
+Two of these change how the code is written.
+
+The trackid is a string whose *contents* look like an object path, while
+`SetPosition` requires an actual object path argument. Parsing the string back
+into one works, but it is not guaranteed by anything, so absolute seeks fall back
+to a relative `Seek` computed from the interpolated position when that conversion
+fails.
+
+`HasTrackList` being false confirms there is no queue to read over MPRIS, which
+is why the queue has to come from the Spotify Web API.
+
+The `Seeked` finding is the opposite of what is widely repeated about this
+client. The clock still does not depend on it, for the portability reason above,
+but the justification is "players vary" rather than "Spotify is broken".
 
 ## Wire protocol
 

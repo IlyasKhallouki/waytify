@@ -5,11 +5,14 @@
 //! position we saw along with the instant we saw it, then advance it against the
 //! local clock and re-anchor whenever the player tells us anything at all.
 //!
-//! This also sidesteps a real portability problem. The MPRIS spec has a `Seeked`
-//! signal for exactly this purpose, but players are inconsistent about emitting
-//! it, and Spotify's Linux client is widely reported not to. Anything built on
-//! the assumption that seeks are announced will drift on some player somewhere.
-//! Re-anchoring on every property change costs nothing and does not care.
+//! MPRIS does have a `Seeked` signal for announcing jumps, and it is used when it
+//! arrives. It is just not depended on. Support varies across players, and a
+//! clock that only corrects itself on `Seeked` drifts silently on any player that
+//! does not send one. Re-anchoring on every property change costs nothing and
+//! works either way.
+//!
+//! For the record, Spotify's Linux client does emit `Seeked` correctly, measured
+//! on 1.2.92.147. That is worth stating because the opposite is often repeated.
 
 use std::time::{Duration, Instant};
 

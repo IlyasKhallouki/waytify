@@ -67,11 +67,14 @@ Polling `Position` often enough for a smooth scrubber means a D-Bus round trip
 per frame. The clock records the last observed position with the instant it was
 observed and advances locally from there.
 
-MPRIS has a `Seeked` signal meant for exactly this, and players are inconsistent
-about emitting it. Spotify's Linux client is widely reported not to. Rather than
-build on that, the clock re-anchors on every property change, which arrives
-regardless of how the player feels about `Seeked`. If the signal does show up it
-gets used, and if it never does nothing notices.
+MPRIS has a `Seeked` signal meant for exactly this, and support for it varies.
+Rather than build on it, the clock re-anchors on every property change, which
+arrives regardless. If `Seeked` shows up it gets used, and if it never does
+nothing notices.
+
+This was originally written down with a stronger claim attached: that Spotify's
+Linux client does not emit `Seeked`. That is a common thing to read and it turned
+out to be wrong. See below.
 
 Two rules keep the cost at zero when it should be zero. A paused player cannot
 drift, so it is never polled. With no clients connected there is nothing
@@ -134,6 +137,66 @@ normal path. The comments now say so.
 
 That is the kind of thing a test earns its keep for. Nothing was broken, but the
 code meant something different from what it was documented to mean.
+
+## Checking the assumptions against real Spotify
+
+Everything above was built against the spec and a mock. The last step was to run
+it against the actual client and find out which of the assumptions were true.
+
+Two were wrong in ways worth recording.
+
+**Spotify emits `Seeked`.** The claim that it does not is easy to find and was
+written into three files here before anyone checked. Version 1.2.92.147 emits it
+reliably, once per seek. The design does not change, since the point of
+re-anchoring on property changes was never Spotify specifically, but the
+justification in the comments was repeating a rumour and now cites a measurement.
+
+**`Position` reports zero on a paused, freshly loaded track.** It advances
+correctly once playback starts. Worth knowing before someone concludes the
+position tracking is broken.
+
+One assumption held up better than expected. `mpris:trackid` really does arrive
+as D-Bus type `s`, a plain string, while `SetPosition` requires type `o`, an
+object path. The string happens to contain something object-path shaped, so
+converting it works, but nothing guarantees that. The relative-seek fallback
+written for this exact case is load-bearing rather than defensive.
+
+`HasTrackList` is `false`, which confirms there is no queue to read over MPRIS and
+that it will have to come from the Web API.
+
+There was also one anomaly that did not reproduce. An early run showed the track
+title unchanged after `next` with the position jumping from 1:16 to 3:23. A clean
+re-run performed two track changes in a row, both landing on the new track at
+0:00. The first harness had a `timeout` killing the bar client inside a nested
+subshell, which is the most likely explanation, but "probably the test" is not the
+same as understanding it. Noted here so it is not forgotten if it comes back.
+
+## Three things running it for real turned up
+
+None of them produced wrong output. All three are the kind of thing you only
+notice with the process list open, which is an argument for opening it.
+
+The bar spawns a daemon when none is listening, and never reaped it. Stopping the
+daemon left `[waytify] <defunct>` sitting under the bar client, and since the bar
+runs for the whole session, every daemon restart would have added another. It now
+hands the child to a thread that waits on it. Four daemon restarts in a row now
+leave zero zombies, where before each one leaked.
+
+The socket was created `0755`. Its directory is `0700`, so nothing could actually
+reach it, but a socket that accepts playback commands should not depend on one
+directory's mode staying correct. It is now `0600` as well.
+
+The bar reconnects after the daemon goes away, and every reconnect attempt starts
+a daemon if none is listening. With a fixed one second delay that is fine when the
+daemon is merely restarting and bad when it cannot start at all, since it forks a
+process every couple of seconds forever. The delay now doubles up to thirty
+seconds and resets once a connection succeeds.
+
+There was also a moment of alarm at three daemons running at once, which looked
+like the single-instance guard failing. They were on three different sockets, two
+of them scratch paths from test runs, so the guard was working exactly as
+intended. Worth writing down mainly as a reminder that `WAYTIFY_SOCKET` makes the
+process list misleading.
 
 ## Where this leaves things
 

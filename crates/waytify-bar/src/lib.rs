@@ -17,6 +17,10 @@ const BLANK: &str = r#"{"text":"","class":["no-player"]}"#;
 /// per-command timeout, so its specific error wins over this generic one.
 const COMMAND_DEADLINE: Duration = Duration::from_secs(4);
 
+/// Reconnect delay after the daemon goes away, doubling up to the maximum.
+const RECONNECT_MIN: Duration = Duration::from_secs(1);
+const RECONNECT_MAX: Duration = Duration::from_secs(30);
+
 /// Run as a Waybar custom module: stream rendered output to stdout forever.
 ///
 /// Waybar keeps this process alive and reads a line at a time, so there is no
@@ -24,16 +28,27 @@ const COMMAND_DEADLINE: Duration = Duration::from_secs(4);
 /// rather than dying and leaving a dead module behind until the next bar reload.
 pub async fn run_bar() -> Result<()> {
     let mut stdout = tokio::io::stdout();
+    let mut backoff = RECONNECT_MIN;
 
     loop {
         match stream_once(&mut stdout).await {
-            Ok(()) => tracing::debug!("daemon closed the connection"),
+            Ok(()) => {
+                // We did connect, so the daemon exists and this was an ordinary
+                // restart. Come back quickly.
+                tracing::debug!("daemon closed the connection");
+                backoff = RECONNECT_MIN;
+            }
             Err(e) => tracing::debug!("bar stream ended: {e:#}"),
         }
         // The daemon is gone or restarting. Clear the module rather than leaving
         // a stale track sitting in the bar.
         write_line(&mut stdout, BLANK).await?;
-        tokio::time::sleep(Duration::from_secs(1)).await;
+        tokio::time::sleep(backoff).await;
+
+        // Backing off matters when the daemon cannot start at all, for instance
+        // with no session bus. Every reconnect attempt spawns one, so a fixed
+        // delay would fork a process every couple of seconds indefinitely.
+        backoff = (backoff * 2).min(RECONNECT_MAX);
     }
 }
 
@@ -164,13 +179,24 @@ fn spawn_daemon() -> Result<()> {
     use std::process::{Command as Proc, Stdio};
 
     let exe = std::env::current_exe().context("locating the waytify binary")?;
-    Proc::new(exe)
+    let mut child = Proc::new(exe)
         .arg("daemon")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .process_group(0)
         .spawn()?;
+
+    // Reap it when it eventually exits. Without this the daemon becomes a zombie
+    // held open for as long as the bar runs, and the bar runs for the whole
+    // session. Every daemon restart would leave another one behind.
+    //
+    // A thread rather than a task because it must outlive any particular async
+    // context, and it costs one blocked thread per daemon start, which is rare.
+    // If the bar exits first the daemon is simply reparented and keeps running.
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
     Ok(())
 }
 

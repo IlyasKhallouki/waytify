@@ -140,7 +140,16 @@ fn bind(socket: &Path) -> Result<UnixListener> {
         }
     }
 
-    UnixListener::bind(socket).with_context(|| format!("binding {}", socket.display()))
+    let listener =
+        UnixListener::bind(socket).with_context(|| format!("binding {}", socket.display()))?;
+
+    // The runtime directory is already owner-only, so this is a second layer
+    // rather than the only one. A socket that accepts playback commands should
+    // not be reachable just because a parent directory's mode was loosened.
+    use std::os::unix::fs::PermissionsExt;
+    let _ = std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600));
+
+    Ok(listener)
 }
 
 /// The runtime directory holds a control socket, so keep it to the owner.
