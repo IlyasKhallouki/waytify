@@ -32,6 +32,23 @@ enum Role {
     /// Stream Waybar JSON on stdout. Use this as a custom module's `exec`.
     Bar,
 
+    /// Run the player window. Normally started on demand rather than by hand.
+    Popup {
+        /// Show as soon as it starts, rather than waiting to be told.
+        #[arg(long)]
+        show: bool,
+        /// Where the click landed, as `X,Y` in compositor logical pixels.
+        #[arg(long, value_name = "X,Y")]
+        at: Option<String>,
+    },
+
+    /// Show the player window if hidden, hide it if shown.
+    Toggle {
+        /// Where to anchor it. Defaults to the current cursor position.
+        #[arg(long, value_name = "X,Y")]
+        at: Option<String>,
+    },
+
     /// Toggle playback.
     PlayPause,
     Play,
@@ -103,6 +120,21 @@ async fn dispatch(cli: Cli) -> Result<()> {
         }
         Role::Bar => return waytify_bar::run_bar().await,
 
+        #[cfg(feature = "popup")]
+        Role::Popup { show, at } => {
+            waytify_popup::check_environment()?;
+            let options = waytify_popup::Options { show_on_start: show, at: parse_point(&at)? };
+            // GTK owns the thread it is initialised on and runs its own main
+            // loop, so it must not be started from inside the tokio runtime.
+            return tokio::task::block_in_place(|| waytify_popup::run(options));
+        }
+        #[cfg(not(feature = "popup"))]
+        Role::Popup { .. } => {
+            anyhow::bail!("this build was compiled without the popup feature")
+        }
+
+        Role::Toggle { at } => Cmd::TogglePopup { at: parse_point(&at)? },
+
         Role::Status => {
             let state = waytify_bar::snapshot().await?;
             println!("{}", serde_json::to_string_pretty(&state)?);
@@ -135,6 +167,20 @@ async fn dispatch(cli: Cli) -> Result<()> {
     };
 
     waytify_bar::send(command).await
+}
+
+/// Parse an `X,Y` argument into a point.
+///
+/// Rejected rather than ignored on malformed input: a keybind passing a bad
+/// coordinate should say so, not silently open the window in the wrong place.
+fn parse_point(arg: &Option<String>) -> Result<Option<waytify_ipc::Point>> {
+    let Some(raw) = arg else { return Ok(None) };
+    let (x, y) =
+        raw.split_once(',').with_context(|| format!("expected a position as X,Y, got {raw:?}"))?;
+    let parse = |v: &str, axis| -> Result<i32> {
+        v.trim().parse().with_context(|| format!("{axis} of {raw:?} is not a whole number"))
+    };
+    Ok(Some(waytify_ipc::Point { x: parse(x, "the X")?, y: parse(y, "the Y")? }))
 }
 
 /// Log to stderr. The bar writes its payload to stdout, so anything else on that

@@ -501,11 +501,15 @@ impl Engine {
             Command::ToggleLike | Command::TransferTo { .. } => {
                 anyhow::bail!("this needs a connected Spotify account")
             }
-            Command::TogglePopup { .. } | Command::ShowPopup { .. } | Command::HidePopup => {
-                anyhow::bail!("the popup arrives in the next phase")
-            }
 
-            Command::Subscribe { .. } | Command::Shutdown => {}
+            // Handled by the daemon before reaching here: window state belongs to
+            // the popup process, and subscription and shutdown are connection
+            // concerns rather than player ones.
+            Command::TogglePopup { .. }
+            | Command::ShowPopup { .. }
+            | Command::HidePopup
+            | Command::Subscribe { .. }
+            | Command::Shutdown => {}
         }
         Ok(())
     }

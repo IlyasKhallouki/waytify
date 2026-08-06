@@ -18,8 +18,15 @@ waytify-ipc = { path = "crates/waytify-ipc", version = "0.1.0" }
 waytify-core = { path = "crates/waytify-core", version = "0.1.0" }
 waytify-daemon = { path = "crates/waytify-daemon", version = "0.1.0" }
 waytify-bar = { path = "crates/waytify-bar", version = "0.1.0" }
+waytify-popup = { path = "crates/waytify-popup", version = "0.1.0" }
 
 anyhow = "1"
+async-channel = "2"
+# v4_12 for CssProvider::load_from_string, which is what makes replacing a
+# provider's contents on hot reload straightforward. GTK 4.12 is from 2023.
+gtk4 = { version = "0.11", features = ["v4_12"] }
+gtk4-layer-shell = "0.8"
+notify = "8"
 clap = { version = "4", features = ["derive", "env"] }
 futures-util = "0.3"
 serde = { version = "1", features = ["derive"] }

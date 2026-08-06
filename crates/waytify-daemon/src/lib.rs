@@ -10,12 +10,12 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{broadcast, mpsc, watch};
 use waytify_core::clock::Attention;
 use waytify_core::config::Config;
 use waytify_core::engine::{Engine, EngineMsg};
 use waytify_core::format::render_bar;
-use waytify_ipc::{Command, Frame, PROTOCOL_VERSION, Scope, State, paths};
+use waytify_ipc::{Command, Frame, PROTOCOL_VERSION, Point, PopupAction, Scope, State, paths};
 
 /// How long to wait for a player to answer a command before giving up on it.
 const COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
@@ -27,6 +27,10 @@ struct Ctx {
     engine: mpsc::Sender<EngineMsg>,
     watchers: Watchers,
     shutdown: tokio::sync::Notify,
+    /// Show and hide requests, fanned out to whichever popup process is
+    /// connected. Broadcast rather than a single channel because the daemon does
+    /// not track which client is the window, only that some Full subscriber is.
+    popup: broadcast::Sender<PopupAction>,
 }
 
 /// How many clients of each kind are connected, which decides how hard the
@@ -77,6 +81,7 @@ pub async fn run(config: Config) -> Result<()> {
         engine: engine_tx,
         watchers: Watchers::default(),
         shutdown: tokio::sync::Notify::new(),
+        popup: broadcast::channel(8).0,
     });
 
     tracing::info!("listening on {}", socket.display());
@@ -162,6 +167,7 @@ async fn serve_client(stream: UnixStream, ctx: &Arc<Ctx>) -> Result<()> {
     let (reader, mut writer) = stream.into_split();
     let mut lines = BufReader::new(reader).lines();
     let mut states = ctx.states.clone();
+    let mut popups = ctx.popup.subscribe();
     let mut scope: Option<Scope> = None;
 
     send(
@@ -216,6 +222,18 @@ async fn serve_client(stream: UnixStream, ctx: &Arc<Ctx>) -> Result<()> {
                     send_state(&mut writer, scope, &state, ctx).await?;
                 }
             }
+            action = popups.recv() => {
+                match action {
+                    Ok(action) if scope == Some(Scope::Full) => {
+                        send(&mut writer, &Frame::Popup { action }).await?;
+                    }
+                    // A client too slow to keep up with window actions has missed
+                    // a show or a hide. Nothing useful can be replayed, and the
+                    // next request will arrive shortly, so carry on.
+                    Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(broadcast::error::RecvError::Closed) => break Ok(()),
+                }
+            }
         }
     };
 
@@ -232,6 +250,12 @@ async fn serve_client(stream: UnixStream, ctx: &Arc<Ctx>) -> Result<()> {
 /// indefinitely, and a client blocking forever on a keybind is worse than one
 /// that reports the player is not answering.
 async fn run_command(ctx: &Arc<Ctx>, command: Command) -> Frame {
+    // Window commands never reach the engine. The engine has no window and no way
+    // to know whether one is currently visible; the popup process owns that.
+    if let Some(action) = as_popup_action(&command) {
+        return route_popup(ctx, action);
+    }
+
     let (reply, answer) = tokio::sync::oneshot::channel();
 
     if ctx.engine.send(EngineMsg::Command { command, reply: Some(reply) }).await.is_err() {
@@ -244,6 +268,78 @@ async fn run_command(ctx: &Arc<Ctx>, command: Command) -> Frame {
         Ok(Err(_)) => Frame::Error { message: "the engine stopped before answering".into() },
         Err(_) => Frame::Error { message: "the player did not respond in time".into() },
     }
+}
+
+fn as_popup_action(command: &Command) -> Option<PopupAction> {
+    match *command {
+        Command::TogglePopup { at } => Some(PopupAction::Toggle { at }),
+        Command::ShowPopup { at } => Some(PopupAction::Show { at }),
+        Command::HidePopup => Some(PopupAction::Hide),
+        _ => None,
+    }
+}
+
+/// Deliver a window action, starting the window if it is not running.
+///
+/// The popup is spawned lazily and then stays resident, hidden when not in use.
+/// Starting GTK on every click costs over a tenth of a second before anything is
+/// drawn, which is enough to feel broken, and keeping it resident from boot costs
+/// memory to someone who never opens it. Spawning on the first request and hiding
+/// afterwards avoids both.
+fn route_popup(ctx: &Arc<Ctx>, action: PopupAction) -> Frame {
+    // Deliberately the Full subscriber count rather than whether the broadcast
+    // has receivers. Every client subscribes to the channel including the bar,
+    // which ignores window actions, so receiver count answers "is anything
+    // connected" when the question is "is the window connected".
+    if ctx.watchers.full.load(Ordering::Relaxed) > 0 {
+        let _ = ctx.popup.send(action);
+        return Frame::Ack;
+    }
+
+    // No window running. Hiding one that does not exist is already true rather
+    // than an error.
+    if matches!(action, PopupAction::Hide) {
+        return Frame::Ack;
+    }
+
+    let at = match action {
+        PopupAction::Show { at } | PopupAction::Toggle { at } => at,
+        PopupAction::Hide => None,
+    };
+    match spawn_popup(at) {
+        Ok(()) => Frame::Ack,
+        Err(e) => Frame::Error { message: format!("could not start the player window: {e:#}") },
+    }
+}
+
+/// Start `waytify popup`, detached, showing immediately.
+///
+/// Same process group and reaping treatment as the daemon itself gets from the
+/// bar: a new group so a signal aimed at the daemon does not take the window with
+/// it, and a thread to wait on the child so it does not become a zombie held for
+/// the daemon's lifetime.
+fn spawn_popup(at: Option<Point>) -> Result<()> {
+    use std::os::unix::process::CommandExt;
+    use std::process::{Command as Proc, Stdio};
+
+    let exe = std::env::current_exe().context("locating the waytify binary")?;
+    let mut cmd = Proc::new(exe);
+    cmd.arg("popup").arg("--show");
+    if let Some(p) = at {
+        cmd.arg("--at").arg(format!("{},{}", p.x, p.y));
+    }
+    let mut child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn()
+        .context("spawning the popup process")?;
+
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
 }
 
 async fn set_scope(ctx: &Arc<Ctx>, current: &mut Option<Scope>, requested: Scope) {

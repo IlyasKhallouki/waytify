@@ -86,7 +86,8 @@ async fn stream_frames(stream: UnixStream, stdout: &mut tokio::io::Stdout) -> Re
                 check_protocol(protocol, &version)?;
             }
             Ok(Frame::Error { message }) => tracing::warn!("daemon: {message}"),
-            Ok(Frame::Ack | Frame::State { .. }) => {}
+            // Window actions and full state both go to the popup, not here.
+            Ok(Frame::Ack | Frame::State { .. } | Frame::Popup { .. }) => {}
             Err(e) => tracing::warn!("unreadable frame: {e}"),
         }
     }

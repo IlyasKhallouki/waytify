@@ -1,0 +1,21 @@
+[package]
+name = "waytify-popup"
+description = "GTK4 layer-shell player window for waytify"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+waytify-ipc = { workspace = true }
+
+anyhow = { workspace = true }
+async-channel = { workspace = true }
+gtk4 = { workspace = true }
+gtk4-layer-shell = { workspace = true }
+notify = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }

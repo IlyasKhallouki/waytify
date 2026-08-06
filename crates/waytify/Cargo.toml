@@ -16,11 +16,18 @@ readme = "../../README.md"
 name = "waytify"
 path = "src/main.rs"
 
+[features]
+default = ["popup"]
+# The window pulls in GTK4. Turning it off gives a bar-and-daemon build with no
+# graphical dependencies, which is what a headless or minimal install wants.
+popup = ["dep:waytify-popup"]
+
 [dependencies]
 waytify-bar = { workspace = true }
 waytify-core = { workspace = true }
 waytify-daemon = { workspace = true }
 waytify-ipc = { workspace = true }
+waytify-popup = { workspace = true, optional = true }
 
 anyhow = { workspace = true }
 clap = { workspace = true }

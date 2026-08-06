@@ -47,6 +47,25 @@ pub struct Point {
     pub y: i32,
 }
 
+/// What the popup process is being asked to do.
+///
+/// Sent to [`Scope::Full`] subscribers rather than acted on by the daemon, since
+/// the daemon has no window of its own and the popup is the only process that can
+/// answer for whether one is currently visible.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub enum PopupAction {
+    Show {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        at: Option<Point>,
+    },
+    Hide,
+    Toggle {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        at: Option<Point>,
+    },
+}
+
 /// Client to daemon.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "cmd", rename_all = "snake_case")]
@@ -137,6 +156,8 @@ pub enum Frame {
     /// Sent to [`Scope::Bar`] subscribers. Already rendered, so the bar client
     /// carries no formatting logic and no user config of its own.
     Bar { bar: BarOutput },
+    /// Sent to [`Scope::Full`] subscribers to show, hide, or toggle the window.
+    Popup { action: PopupAction },
     /// A command was carried out. Sent so a one-shot client can exit as soon as
     /// the work is done instead of waiting out a timeout to learn nothing broke.
     Ack,

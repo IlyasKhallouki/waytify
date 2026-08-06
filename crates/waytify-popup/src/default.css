@@ -1,0 +1,130 @@
+/*
+ * waytify default styles.
+ *
+ * Everything here is overridable from ~/.config/waytify/style.css, which loads
+ * at USER priority and therefore wins without needing !important.
+ *
+ * Album art colours are available as @art_vibrant, @art_muted and
+ * @art_on_vibrant. They are always defined, so referencing one is safe even
+ * before any art has loaded. Nothing below uses them: following the record is a
+ * choice a theme makes, not a default imposed on everyone.
+ */
+
+@define-color waytify_bg #16181d;
+@define-color waytify_fg #e9ebf1;
+@define-color waytify_dim #98a0b0;
+@define-color waytify_faint #666e7e;
+@define-color waytify_accent #e0a052;
+
+#waytify-popup {
+  background-color: @waytify_bg;
+  color: @waytify_fg;
+  border-radius: 14px;
+  padding: 16px;
+}
+
+/* Album art, and the box that stands in for it before one has loaded. */
+#waytify-popup .waytify-art {
+  border-radius: 8px;
+  background-color: shade(@waytify_bg, 1.6);
+}
+
+#waytify-popup .track-title {
+  font-size: 1.05rem;
+  font-weight: 700;
+}
+
+#waytify-popup .track-artist {
+  color: @waytify_dim;
+}
+
+#waytify-popup .track-album {
+  color: @waytify_faint;
+  font-size: 0.9rem;
+}
+
+/* Elapsed and total, either side of the scrubber. Tabular figures stop the
+ * layout shifting every time a digit changes width. */
+#waytify-popup .elapsed,
+#waytify-popup .duration {
+  color: @waytify_dim;
+  font-size: 0.85rem;
+  font-feature-settings: "tnum";
+  min-width: 3.2em;
+}
+
+#waytify-popup .scrubber trough {
+  min-height: 4px;
+  border-radius: 2px;
+  background-color: shade(@waytify_bg, 1.8);
+}
+
+#waytify-popup .scrubber highlight {
+  border-radius: 2px;
+  background-color: @waytify_accent;
+}
+
+/* Hidden until hover, so a resting scrubber reads as a progress bar rather than
+ * a control demanding attention. */
+#waytify-popup .scrubber slider {
+  min-width: 12px;
+  min-height: 12px;
+  border-radius: 50%;
+  background-color: transparent;
+}
+
+#waytify-popup .scrubber:hover slider {
+  background-color: @waytify_fg;
+}
+
+#waytify-popup .scrubber:disabled highlight {
+  background-color: @waytify_faint;
+}
+
+#waytify-popup .waytify-transport button {
+  min-width: 34px;
+  min-height: 34px;
+  border-radius: 50%;
+  color: @waytify_fg;
+  background: none;
+  border: none;
+  box-shadow: none;
+}
+
+#waytify-popup .waytify-transport button:hover {
+  background-color: shade(@waytify_bg, 1.7);
+}
+
+/* The primary action, sized and filled to read as such. */
+#waytify-popup .waytify-transport .playpause {
+  min-width: 42px;
+  min-height: 42px;
+  background-color: @waytify_fg;
+  color: @waytify_bg;
+}
+
+#waytify-popup .waytify-transport .playpause:hover {
+  background-color: @waytify_accent;
+}
+
+/* Secondary toggles sit back until they are on. */
+#waytify-popup .waytify-transport .shuffle,
+#waytify-popup .waytify-transport .repeat {
+  color: @waytify_faint;
+}
+
+#waytify-popup .waytify-transport .shuffle:checked {
+  color: @waytify_accent;
+}
+
+/* Nothing is playing. */
+#waytify-popup.no-player .track-title {
+  color: @waytify_dim;
+  font-weight: 400;
+}
+
+/* The daemon went away. The last known track is still on screen, so say so
+ * rather than pretending it is current. */
+#waytify-popup.offline {
+  opacity: 0.6;
+}
