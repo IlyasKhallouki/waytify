@@ -252,6 +252,36 @@ async fn engine_follows_a_live_player() {
         );
     }
 
+    // Selecting a new song while paused starts playback, and the track change and
+    // the new playback state are announced as two separate signals. If the status
+    // one is missed, or arrives wrapped in a shape the parser does not recognise,
+    // the bar sits on "paused" while music plays.
+    //
+    // This emits only the metadata change and withholds the status signal
+    // entirely, so the engine can only get this right by asking the player what
+    // is actually true rather than trusting what the signal carried.
+    {
+        let mut guard = iface.get_mut().await;
+        guard.title = "Veridis Quo".into();
+        guard.track_id = "spotify:track:2LD2gT7gwAurzdQDRAJgTs".into();
+        guard.status = "Playing".into();
+        guard.position_us = 0;
+        guard.metadata_changed(iface.signal_emitter()).await.unwrap();
+        // No playback_status_changed. That is the whole point of the test.
+    }
+
+    wait_for(&mut states, |s| s.track().map(|t| t.title.as_str()) == Some("Veridis Quo")).await;
+
+    {
+        let s = states.borrow_and_update();
+        assert_eq!(
+            s.status(),
+            Status::Playing,
+            "playback state must be read from the player, not inferred from which \
+             properties a signal happened to carry"
+        );
+    }
+
     engine_task.abort();
     let _ = conn.release_name(MOCK_NAME).await;
 }

@@ -101,19 +101,27 @@ It is often repeated that Spotify's Linux client does not emit `Seeked`. That is
 not true, at least of 1.2.92.147, which emits it correctly. See
 [MPRIS behaviour](#measured-mpris-behaviour) for what was actually measured.
 
-Correction interval depends on who is watching, and on whether there is anything
-to correct:
+Reconciliation interval depends on who is watching, and on what could actually be
+wrong:
 
 | Watching | Playing | Interval |
 | --- | --- | --- |
 | Nobody | either | never |
 | Bar only | yes | 30s |
 | Popup open | yes | 5s |
-| anyone | no | never |
+| Bar or popup | no | 30s |
 
-A paused player cannot drift, so it is never polled. With no clients connected,
-nothing is rendering a position and nothing needs one. Together those two rules
-are what keep an idle machine at zero D-Bus traffic.
+With no clients connected nothing is rendering, so nothing can be visibly wrong
+and nothing is polled. That is what keeps an idle machine at zero D-Bus traffic.
+
+A paused player still gets a slow tick, which is not about position. Position
+cannot drift while paused, but the belief that playback is paused can itself be
+wrong if a status signal was missed, and that case does not self-correct: no
+further event arrives to trigger a re-check. Thirty seconds of a wrong icon is
+recoverable, forever is not.
+
+Each tick re-reads playback status and position together, and publishes only if
+something actually moved.
 
 Two more details. The clock is frozen while the scrubber is being dragged, so
 the thumb does not fight the pointer, and it re-anchors optimistically on

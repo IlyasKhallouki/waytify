@@ -30,19 +30,27 @@ pub enum Attention {
 }
 
 impl Attention {
-    /// How often to re-read the real position, or `None` to leave it alone.
+    /// How often to re-read the player's real status and position, or `None` to
+    /// leave it alone entirely.
     ///
-    /// Paused playback never drifts, so a paused player is polled at no interval
-    /// regardless of who is watching. That single check is what keeps an idle
-    /// machine at zero D-Bus traffic.
-    pub fn drift_interval(self, playing: bool) -> Option<Duration> {
-        if !playing {
-            return None;
-        }
-        match self {
-            Attention::Idle => None,
-            Attention::Bar => Some(Duration::from_secs(30)),
-            Attention::Popup => Some(Duration::from_secs(5)),
+    /// With no clients connected nothing is rendering, so nothing can be visibly
+    /// wrong and nothing is polled. That is what keeps an idle machine at zero
+    /// D-Bus traffic.
+    ///
+    /// While playing, the rate follows who is watching, since a visible scrubber
+    /// deserves a tighter position than a bar showing coarse elapsed time.
+    ///
+    /// While paused the position cannot drift, but the belief that playback is
+    /// paused can itself be wrong if a status signal was missed. That case does
+    /// not self-correct: nothing else will re-check until the track changes, so
+    /// the bar would sit on the wrong icon indefinitely. A slow tick costs one
+    /// call every thirty seconds and makes it recover on its own.
+    pub fn poll_interval(self, playing: bool) -> Option<Duration> {
+        match (self, playing) {
+            (Attention::Idle, _) => None,
+            (Attention::Popup, true) => Some(Duration::from_secs(5)),
+            (Attention::Bar, true) => Some(Duration::from_secs(30)),
+            (_, false) => Some(Duration::from_secs(30)),
         }
     }
 }
@@ -249,17 +257,30 @@ mod tests {
     }
 
     #[test]
-    fn paused_players_are_never_polled() {
+    fn nothing_is_polled_when_nobody_is_watching() {
         // This is the check that keeps an idle machine at zero D-Bus traffic.
-        for a in [Attention::Idle, Attention::Bar, Attention::Popup] {
-            assert_eq!(a.drift_interval(false), None, "{a:?} polled a paused player");
-        }
+        assert_eq!(Attention::Idle.poll_interval(true), None);
+        assert_eq!(Attention::Idle.poll_interval(false), None);
     }
 
     #[test]
     fn poll_rate_follows_who_is_watching() {
-        assert_eq!(Attention::Idle.drift_interval(true), None);
-        assert_eq!(Attention::Bar.drift_interval(true), Some(Duration::from_secs(30)));
-        assert_eq!(Attention::Popup.drift_interval(true), Some(Duration::from_secs(5)));
+        assert_eq!(Attention::Bar.poll_interval(true), Some(Duration::from_secs(30)));
+        assert_eq!(Attention::Popup.poll_interval(true), Some(Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn a_paused_player_is_still_reconciled_slowly() {
+        // Not for position, which cannot drift while paused, but for status.
+        // If a PlaybackStatus signal is ever missed while we believe playback is
+        // paused, no event will arrive to correct it and the bar would show the
+        // wrong icon until the track changed. Regression guard for exactly that.
+        for a in [Attention::Bar, Attention::Popup] {
+            assert_eq!(
+                a.poll_interval(false),
+                Some(Duration::from_secs(30)),
+                "{a:?} left a paused player unreconciled"
+            );
+        }
     }
 }

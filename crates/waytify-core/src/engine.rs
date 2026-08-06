@@ -109,10 +109,10 @@ impl Engine {
 
         loop {
             // Recreated each iteration on purpose. Any event restarts the timer,
-            // which gives the semantics we want: correct drift only when nothing
-            // has been heard for a while.
-            let drift = async {
-                match self.attention.drift_interval(self.clock.is_playing()) {
+            // which gives the semantics we want: reconcile only when nothing has
+            // been heard for a while.
+            let tick = async {
+                match self.attention.poll_interval(self.clock.is_playing()) {
                     Some(d) => tokio::time::sleep(d).await,
                     None => std::future::pending().await,
                 }
@@ -132,7 +132,12 @@ impl Engine {
                     }
                 }
                 Some(ev) = self.events_rx.recv() => self.handle_player_event(ev).await,
-                _ = drift => self.correct_drift().await,
+                _ = tick => {
+                    if self.reconcile(Instant::now()).await {
+                        self.recompute_caps();
+                        self.publish();
+                    }
+                }
             }
         }
         Ok(())
@@ -334,32 +339,50 @@ impl Engine {
         }
 
         if dirty {
-            // Every property change is also a chance to re-anchor the position,
-            // which is how this stays correct on players that never emit Seeked.
-            if let Some(a) = &self.attached
-                && let Ok(us) = a.player.position().await
-            {
-                let observed = us_to_ms(us);
-                if self.clock.drifted(observed, now, DRIFT_TOLERANCE_MS) {
-                    self.clock.anchor(observed, self.clock.is_playing(), now);
-                }
-            }
+            // Ask the player what is actually true rather than trusting the set
+            // of properties this one signal happened to carry.
+            //
+            // Spotify announces a track change and the playback state that comes
+            // with it as separate signals. Selecting a new song while paused
+            // starts playback, and if the status signal is missed or arrives in a
+            // shape the parser does not recognise, the bar keeps the old state
+            // and shows paused over music. Re-reading here closes that gap for
+            // every player, not just the one it was found on.
+            self.reconcile(now).await;
             self.recompute_caps();
             self.publish();
         }
     }
 
-    /// Re-read the real position and republish only if it moved noticeably.
-    async fn correct_drift(&mut self) {
-        let Some(a) = &self.attached else { return };
-        let Ok(us) = a.player.position().await else { return };
+    /// Re-read the player's authoritative status and position.
+    ///
+    /// Returns whether anything actually moved, so a timer tick that finds
+    /// nothing new does not push a redundant frame to every client.
+    async fn reconcile(&mut self, now: Instant) -> bool {
+        let Some(a) = &self.attached else { return false };
+        let player = a.player.clone();
+        let mut changed = false;
 
-        let now = Instant::now();
-        let observed = us_to_ms(us);
-        if self.clock.drifted(observed, now, DRIFT_TOLERANCE_MS) {
-            self.clock.anchor(observed, self.clock.is_playing(), now);
-            self.publish();
+        if let Ok(s) = player.playback_status().await {
+            let status = mpris::parse_status(&s);
+            if self.state.player.as_ref().map(|p| p.status) != Some(status) {
+                if let Some(p) = &mut self.state.player {
+                    p.status = status;
+                }
+                changed = true;
+            }
+            self.clock.set_playing(status.is_playing(), now);
         }
+
+        if let Ok(us) = player.position().await {
+            let observed = us_to_ms(us);
+            if self.clock.drifted(observed, now, DRIFT_TOLERANCE_MS) {
+                self.clock.anchor(observed, self.clock.is_playing(), now);
+                changed = true;
+            }
+        }
+
+        changed
     }
 
     fn recompute_caps(&mut self) {
@@ -534,16 +557,23 @@ fn us_to_ms(us: i64) -> u64 {
 // Matching the variant directly rather than going through TryFrom, for the same
 // reason as in `metadata`: a property arriving with an unexpected type should
 // read as absent instead of failing anything.
-fn as_str(v: &OwnedValue) -> Option<&str> {
-    match &**v {
+//
+// Both unwrap a nested variant. `PropertiesChanged` carries `a{sv}`, and whether
+// the value arrives unwrapped or as a `Value::Value` depends on the sender. Not
+// handling the wrapped form means silently ignoring the property, which for
+// PlaybackStatus means the bar keeps showing whatever it last believed.
+fn as_str<'a>(v: &'a zbus::zvariant::Value<'a>) -> Option<&'a str> {
+    match v {
         zbus::zvariant::Value::Str(s) => Some(s.as_str()),
+        zbus::zvariant::Value::Value(inner) => as_str(inner),
         _ => None,
     }
 }
 
-fn as_bool(v: &OwnedValue) -> Option<bool> {
-    match &**v {
+fn as_bool(v: &zbus::zvariant::Value<'_>) -> Option<bool> {
+    match v {
         zbus::zvariant::Value::Bool(b) => Some(*b),
+        zbus::zvariant::Value::Value(inner) => as_bool(inner),
         _ => None,
     }
 }

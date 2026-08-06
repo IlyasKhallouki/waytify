@@ -51,7 +51,14 @@ pub trait Player {
         position: i64,
     ) -> zbus::Result<()>;
 
-    #[zbus(property)]
+    /// Deliberately uncached.
+    ///
+    /// zbus caches properties that announce changes, and its cache is updated by
+    /// its own signal handler. Reading through that cache while processing the
+    /// very signal that updates it is a race, and this is the one property where
+    /// reading a stale value is visible: the bar shows paused while music plays.
+    /// A real call costs one round trip on an event that is already rare.
+    #[zbus(property(emits_changed_signal = "false"))]
     fn playback_status(&self) -> zbus::Result<String>;
 
     #[zbus(property)]
