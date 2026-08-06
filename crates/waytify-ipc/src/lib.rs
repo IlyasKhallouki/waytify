@@ -121,6 +121,9 @@ pub enum Frame {
     /// Sent to [`Scope::Bar`] subscribers. Already rendered, so the bar client
     /// carries no formatting logic and no user config of its own.
     Bar { bar: BarOutput },
+    /// A command was carried out. Sent so a one-shot client can exit as soon as
+    /// the work is done instead of waiting out a timeout to learn nothing broke.
+    Ack,
     /// A command failed. Non-fatal: the connection stays open.
     Error { message: String },
 }

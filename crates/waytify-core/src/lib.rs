@@ -9,11 +9,13 @@
 
 pub mod clock;
 pub mod config;
+pub mod engine;
 pub mod format;
 pub mod metadata;
 pub mod mpris;
 
 pub use clock::{Attention, PositionClock};
 pub use config::Config;
+pub use engine::{Engine, EngineMsg};
 pub use format::render_bar;
 pub use metadata::{Metadata, spotify_track_id, track_from_metadata};

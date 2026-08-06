@@ -18,7 +18,7 @@
 
 use crate::config::{BarConfig, Icons};
 use std::collections::HashMap;
-use waytify_ipc::{BarOutput, State, Status};
+use waytify_ipc::{BarOutput, State};
 
 /// Values available to a template.
 pub type Vars = HashMap<&'static str, String>;
@@ -47,6 +47,48 @@ pub fn format_time(ms: u64) -> String {
     let total = ms / 1_000;
     let (h, m, s) = (total / 3_600, (total % 3_600) / 60, total % 60);
     if h > 0 { format!("{h}:{m:02}:{s:02}") } else { format!("{m}:{s:02}") }
+}
+
+/// A seek requested on the command line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SeekSpec {
+    /// Jump to a point in the track.
+    Absolute(u64),
+    /// Move by an offset, in milliseconds. Negative rewinds.
+    Relative(i64),
+}
+
+/// Parse a seek argument such as `1:30`, `90`, `+10`, or `-10s`.
+///
+/// A leading sign means relative, which is what a keybind wants. Everything else
+/// is a position, accepted either as `m:ss` or as bare seconds.
+pub fn parse_seek(s: &str) -> Option<SeekSpec> {
+    let s = s.trim();
+    let s = s.strip_suffix('s').unwrap_or(s);
+    if s.is_empty() {
+        return None;
+    }
+
+    if let Some(rest) = s.strip_prefix('+') {
+        return Some(SeekSpec::Relative(parse_seconds(rest)? as i64 * 1_000));
+    }
+    if let Some(rest) = s.strip_prefix('-') {
+        return Some(SeekSpec::Relative(-(parse_seconds(rest)? as i64) * 1_000));
+    }
+    Some(SeekSpec::Absolute(parse_seconds(s)? * 1_000))
+}
+
+/// Seconds from `90`, `1:30`, or `1:02:03`.
+fn parse_seconds(s: &str) -> Option<u64> {
+    let mut total: u64 = 0;
+    let parts: Vec<&str> = s.split(':').collect();
+    if parts.len() > 3 {
+        return None;
+    }
+    for part in &parts {
+        total = total.checked_mul(60)?.checked_add(part.parse::<u64>().ok()?)?;
+    }
+    Some(total)
 }
 
 /// Expand a template against a set of values.
@@ -178,7 +220,7 @@ pub fn render_bar(state: &State, cfg: &BarConfig) -> BarOutput {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use waytify_ipc::{Player, Track};
+    use waytify_ipc::{Player, Status, Track};
 
     fn vars(pairs: &[(&'static str, &str)]) -> Vars {
         pairs.iter().map(|(k, v)| (*k, v.to_string())).collect()
@@ -233,6 +275,29 @@ mod tests {
         // makes Pango discard the whole label if it reaches the output raw.
         let v = vars(&[("title", "Me & You <3")]);
         assert_eq!(render("<b>{title}</b>", &v), "<b>Me &amp; You &lt;3</b>");
+    }
+
+    #[test]
+    fn seek_arguments_cover_the_shapes_a_keybind_would_use() {
+        assert_eq!(parse_seek("1:30"), Some(SeekSpec::Absolute(90_000)));
+        assert_eq!(parse_seek("90"), Some(SeekSpec::Absolute(90_000)));
+        assert_eq!(parse_seek("1:02:03"), Some(SeekSpec::Absolute(3_723_000)));
+        assert_eq!(parse_seek("+10"), Some(SeekSpec::Relative(10_000)));
+        assert_eq!(parse_seek("-10s"), Some(SeekSpec::Relative(-10_000)));
+    }
+
+    #[test]
+    fn a_sign_is_what_makes_a_seek_relative() {
+        // `10` should jump to ten seconds, not skip forward ten.
+        assert_eq!(parse_seek("10"), Some(SeekSpec::Absolute(10_000)));
+        assert_ne!(parse_seek("10"), parse_seek("+10"));
+    }
+
+    #[test]
+    fn nonsense_seeks_are_rejected_rather_than_guessed() {
+        for bad in ["", "abc", "1:2:3:4", "--5", "1:xx"] {
+            assert_eq!(parse_seek(bad), None, "{bad:?} should not parse");
+        }
     }
 
     #[test]
