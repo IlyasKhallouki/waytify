@@ -39,8 +39,38 @@ cd waytify
 cargo install --path crates/waytify
 ```
 
-That puts a single `waytify` binary in `~/.cargo/bin`. Make sure it is on your
-`PATH`.
+That puts a single `waytify` binary in `~/.cargo/bin`.
+
+### Make sure Waybar can find it
+
+This one is worth two minutes now rather than an hour later.
+
+Waybar runs your module with the PATH of the session that started it, not the
+PATH of the terminal you installed from. `~/.cargo/bin` is usually added by your
+shell's config, which a compositor launching Waybar at login never reads. So
+`waytify` works perfectly when you type it and is invisible to Waybar.
+
+The failure is quiet and misleading. Waybar keeps displaying the last output a
+module produced, so instead of an obviously empty widget you get one frozen on a
+track from earlier, with a play icon that no longer matches what you are hearing.
+It looks like a sync bug rather than a missing binary.
+
+Check what Waybar can actually see:
+
+```sh
+tr '\0' '\n' < /proc/$(pgrep -x waybar | head -1)/environ | grep ^PATH=
+```
+
+If `~/.cargo/bin` is not in there, put waytify somewhere that is. `~/.local/bin`
+is on the default PATH of most distributions:
+
+```sh
+mkdir -p ~/.local/bin
+ln -sf ~/.cargo/bin/waytify ~/.local/bin/waytify
+```
+
+A symlink rather than a copy, so future `cargo install` runs are picked up
+without repeating this.
 
 ## Waybar setup
 
@@ -50,6 +80,7 @@ Add a module:
 "custom/waytify": {
   "exec": "waytify bar",
   "return-type": "json",
+  "restart-interval": 1,
   "on-click": "waytify play-pause",
   "on-click-right": "waytify next",
   "on-click-middle": "waytify previous",
@@ -64,6 +95,11 @@ Then put `custom/waytify` in one of your `modules-*` arrays.
 There is no `interval`. `waytify bar` is a long-lived process that prints a line
 when something changes, so the bar updates on the event rather than on a timer.
 The daemon starts on its own the first time any client needs it.
+
+`restart-interval` matters more than it looks. Waybar goes on displaying the last
+output a module produced after that module's process exits, so without it, a
+client that dies for any reason leaves a widget frozen on an old track rather
+than an empty one. This respawns it a second later.
 
 Do not set `"escape": true`. waytify escapes track metadata itself and leaves
 your template's markup alone, so `<b>{title}</b>` works while an ampersand in a

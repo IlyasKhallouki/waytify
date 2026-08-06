@@ -1,5 +1,12 @@
 # 0002: The pause icon that lied
 
+> **Correction.** This entry diagnoses the wrong thing. The reported symptom had
+> a different cause entirely, covered in
+> [0003](0003-the-bug-was-never-in-the-engine.md). The changes described below
+> were still made and are still worth having, but nothing here fixed what was
+> reported, and one part of it made things worse. Read 0003 alongside this.
+
+
 The report: pause, then pick a different song. Spotify starts playing it. The bar
 keeps showing the pause icon. Title and elapsed time update correctly, so only
 the playback state is wrong.

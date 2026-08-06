@@ -11,10 +11,21 @@
 // Do not add "escape": true. waytify escapes track metadata itself and leaves
 // your template's markup alone. Waybar's own escaping would double-escape the
 // metadata and break the markup.
+//
+// If the module shows a track that never changes, check that Waybar can find
+// waytify at all. Waybar uses the session's PATH, which usually does not include
+// ~/.cargo/bin, and it keeps rendering a module's last output after that process
+// exits. A binary Waybar cannot launch therefore looks like a stuck widget
+// rather than a missing one. See the README.
 {
   "custom/waytify": {
     "exec": "waytify bar",
     "return-type": "json",
+
+    // Waybar goes on displaying the last JSON it received when a module's
+    // process dies, so a client that exits leaves a widget frozen on a stale
+    // track. This respawns it a second later instead.
+    "restart-interval": 1,
 
     "on-click": "waytify play-pause",
     "on-click-right": "waytify next",

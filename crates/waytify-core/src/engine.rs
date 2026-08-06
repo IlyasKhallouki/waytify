@@ -133,7 +133,11 @@ impl Engine {
                 }
                 Some(ev) = self.events_rx.recv() => self.handle_player_event(ev).await,
                 _ = tick => {
-                    if self.reconcile(Instant::now()).await {
+                    let now = Instant::now();
+                    // Nothing announced anything for a while, so both reads are
+                    // gap fills rather than second guesses.
+                    let moved = self.refresh_status(now).await | self.refresh_position(now).await;
+                    if moved {
                         self.recompute_caps();
                         self.publish();
                     }
@@ -290,16 +294,37 @@ impl Engine {
     async fn apply_properties(&mut self, changed: HashMap<String, OwnedValue>) {
         let now = Instant::now();
         let mut dirty = false;
+        // Whether this signal told us the playback state outright. If it did,
+        // that value stands: it is the player reporting its own transition, and
+        // asking again straight afterwards can catch it mid-change and read the
+        // state it is leaving rather than the one it is entering.
+        let mut status_announced = false;
 
-        if let Some(v) = changed.get("PlaybackStatus")
-            && let Some(s) = as_str(v)
-        {
-            let status = mpris::parse_status(s);
-            if let Some(p) = &mut self.state.player {
-                p.status = status;
+        tracing::debug!(
+            props = ?changed.keys().collect::<Vec<_>>(),
+            "properties changed"
+        );
+
+        if let Some(v) = changed.get("PlaybackStatus") {
+            match as_str(v) {
+                Some(s) => {
+                    let status = mpris::parse_status(s);
+                    tracing::debug!(%s, ?status, "playback status announced");
+                    if let Some(p) = &mut self.state.player {
+                        p.status = status;
+                    }
+                    self.clock.set_playing(status.is_playing(), now);
+                    status_announced = true;
+                    dirty = true;
+                }
+                // Announced in a shape we cannot read. Leaving the old value in
+                // place is what made the bar show paused over music, so treat it
+                // as if it had not been announced and go ask instead.
+                None => tracing::warn!(
+                    signature = ?v.value_signature(),
+                    "PlaybackStatus arrived in an unreadable form"
+                ),
             }
-            self.clock.set_playing(status.is_playing(), now);
-            dirty = true;
         }
 
         if let Some(v) = changed.get("Metadata") {
@@ -339,50 +364,54 @@ impl Engine {
         }
 
         if dirty {
-            // Ask the player what is actually true rather than trusting the set
-            // of properties this one signal happened to carry.
-            //
-            // Spotify announces a track change and the playback state that comes
-            // with it as separate signals. Selecting a new song while paused
-            // starts playback, and if the status signal is missed or arrives in a
-            // shape the parser does not recognise, the bar keeps the old state
-            // and shows paused over music. Re-reading here closes that gap for
-            // every player, not just the one it was found on.
-            self.reconcile(now).await;
+            // Only ask when this signal did not say. Spotify announces a track
+            // change and the playback state that comes with it as two separate
+            // signals, so a metadata change can arrive while our idea of the
+            // state is already stale. Filling that gap is the point. Overwriting
+            // a state the player just announced is not, and doing so reads it
+            // mid-transition often enough to be worse than the original bug.
+            if !status_announced {
+                self.refresh_status(now).await;
+            }
+            self.refresh_position(now).await;
             self.recompute_caps();
             self.publish();
         }
     }
 
-    /// Re-read the player's authoritative status and position.
+    /// Read the playback state from the player.
     ///
-    /// Returns whether anything actually moved, so a timer tick that finds
-    /// nothing new does not push a redundant frame to every client.
-    async fn reconcile(&mut self, now: Instant) -> bool {
+    /// Only for when nothing announced it: a timer tick, or a signal that changed
+    /// something else without mentioning the state. Returns whether it moved.
+    async fn refresh_status(&mut self, now: Instant) -> bool {
         let Some(a) = &self.attached else { return false };
-        let player = a.player.clone();
-        let mut changed = false;
+        let Ok(s) = a.player.playback_status().await else { return false };
 
-        if let Ok(s) = player.playback_status().await {
-            let status = mpris::parse_status(&s);
-            if self.state.player.as_ref().map(|p| p.status) != Some(status) {
-                if let Some(p) = &mut self.state.player {
-                    p.status = status;
-                }
-                changed = true;
-            }
-            self.clock.set_playing(status.is_playing(), now);
+        let status = mpris::parse_status(&s);
+        let previous = self.state.player.as_ref().map(|p| p.status);
+        self.clock.set_playing(status.is_playing(), now);
+
+        if previous == Some(status) {
+            return false;
         }
-
-        if let Ok(us) = player.position().await {
-            let observed = us_to_ms(us);
-            if self.clock.drifted(observed, now, DRIFT_TOLERANCE_MS) {
-                self.clock.anchor(observed, self.clock.is_playing(), now);
-                changed = true;
-            }
+        tracing::debug!(?previous, ?status, "playback state corrected by a read");
+        if let Some(p) = &mut self.state.player {
+            p.status = status;
         }
+        true
+    }
 
-        changed
+    /// Re-anchor the position from the player if it has drifted noticeably.
+    async fn refresh_position(&mut self, now: Instant) -> bool {
+        let Some(a) = &self.attached else { return false };
+        let Ok(us) = a.player.position().await else { return false };
+
+        let observed = us_to_ms(us);
+        if !self.clock.drifted(observed, now, DRIFT_TOLERANCE_MS) {
+            return false;
+        }
+        self.clock.anchor(observed, self.clock.is_playing(), now);
+        true
     }
 
     fn recompute_caps(&mut self) {

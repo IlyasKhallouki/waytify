@@ -17,9 +17,18 @@ const BLANK: &str = r#"{"text":"","class":["no-player"]}"#;
 /// per-command timeout, so its specific error wins over this generic one.
 const COMMAND_DEADLINE: Duration = Duration::from_secs(4);
 
-/// Reconnect delay after the daemon goes away, doubling up to the maximum.
-const RECONNECT_MIN: Duration = Duration::from_secs(1);
-const RECONNECT_MAX: Duration = Duration::from_secs(30);
+/// How long to wait before reconnecting after the daemon closes the connection.
+///
+/// Deliberately short and not backed off. A daemon that just went away is nearly
+/// always one that is restarting, and every second spent waiting is a second of
+/// blank or stale bar.
+const RETRY_AFTER_DISCONNECT: Duration = Duration::from_millis(250);
+
+/// How long to wait between attempts to start a daemon when nothing is
+/// listening, doubling up to the maximum. This is the only case that backs off,
+/// because it is the only one that forks a process.
+const SPAWN_MIN: Duration = Duration::from_secs(1);
+const SPAWN_MAX: Duration = Duration::from_secs(30);
 
 /// Run as a Waybar custom module: stream rendered output to stdout forever.
 ///
@@ -28,32 +37,40 @@ const RECONNECT_MAX: Duration = Duration::from_secs(30);
 /// rather than dying and leaving a dead module behind until the next bar reload.
 pub async fn run_bar() -> Result<()> {
     let mut stdout = tokio::io::stdout();
-    let mut backoff = RECONNECT_MIN;
+    let socket = paths::socket_path();
+    let mut spawn_backoff = SPAWN_MIN;
 
     loop {
-        match stream_once(&mut stdout).await {
-            Ok(()) => {
-                // We did connect, so the daemon exists and this was an ordinary
-                // restart. Come back quickly.
-                tracing::debug!("daemon closed the connection");
-                backoff = RECONNECT_MIN;
+        match UnixStream::connect(&socket).await {
+            Ok(stream) => {
+                // Something is listening, so whatever was wrong before is over.
+                spawn_backoff = SPAWN_MIN;
+                if let Err(e) = stream_frames(stream, &mut stdout).await {
+                    tracing::debug!("bar stream ended: {e:#}");
+                }
+                // The daemon went away, almost always because it is restarting.
+                // Clear the module rather than leaving a stale track on screen,
+                // then come straight back: this is the common case and it should
+                // not be the one that waits.
+                write_line(&mut stdout, BLANK).await?;
+                tokio::time::sleep(RETRY_AFTER_DISCONNECT).await;
             }
-            Err(e) => tracing::debug!("bar stream ended: {e:#}"),
+            Err(_) => {
+                // Nothing listening. Start a daemon, but not on every attempt:
+                // if it cannot start at all, retrying at a fixed interval would
+                // fork a process forever.
+                if let Err(e) = spawn_daemon() {
+                    tracing::debug!("could not start the daemon: {e:#}");
+                }
+                write_line(&mut stdout, BLANK).await?;
+                tokio::time::sleep(spawn_backoff).await;
+                spawn_backoff = (spawn_backoff * 2).min(SPAWN_MAX);
+            }
         }
-        // The daemon is gone or restarting. Clear the module rather than leaving
-        // a stale track sitting in the bar.
-        write_line(&mut stdout, BLANK).await?;
-        tokio::time::sleep(backoff).await;
-
-        // Backing off matters when the daemon cannot start at all, for instance
-        // with no session bus. Every reconnect attempt spawns one, so a fixed
-        // delay would fork a process every couple of seconds indefinitely.
-        backoff = (backoff * 2).min(RECONNECT_MAX);
     }
 }
 
-async fn stream_once(stdout: &mut tokio::io::Stdout) -> Result<()> {
-    let stream = connect().await?;
+async fn stream_frames(stream: UnixStream, stdout: &mut tokio::io::Stdout) -> Result<()> {
     let (reader, mut writer) = stream.into_split();
     let mut lines = BufReader::new(reader).lines();
 
