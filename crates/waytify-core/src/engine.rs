@@ -13,7 +13,7 @@ use anyhow::{Context, Result};
 use futures_util::StreamExt;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, watch};
 use waytify_ipc::{Command, Player, State, Status};
 use zbus::Connection;
@@ -118,6 +118,25 @@ impl Engine {
                 }
             };
 
+            // Separate from the reconcile tick above, and much cheaper: no D-Bus
+            // call, just a clone and a channel send.
+            //
+            // The position advances continuously but the daemon only publishes on
+            // change, and smooth interpolation is not a change. Clients would see
+            // the elapsed time freeze between events. The bar cannot paper over
+            // that by interpolating itself, because it receives text the daemon
+            // has already rendered rather than a position to advance.
+            //
+            // Only while playing, and only while someone is connected, so an idle
+            // machine still produces nothing at all.
+            let republish = async {
+                if self.attention != Attention::Idle && self.clock.is_playing() {
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                } else {
+                    std::future::pending().await
+                }
+            };
+
             tokio::select! {
                 msg = msgs.recv() => match msg {
                     Some(m) => self.handle_msg(m).await,
@@ -132,6 +151,7 @@ impl Engine {
                     }
                 }
                 Some(ev) = self.events_rx.recv() => self.handle_player_event(ev).await,
+                _ = republish => self.publish(),
                 _ = tick => {
                     let now = Instant::now();
                     // Nothing announced anything for a while, so both reads are

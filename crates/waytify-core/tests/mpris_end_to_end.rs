@@ -18,6 +18,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::sync::mpsc;
+use waytify_core::clock::Attention;
 use waytify_core::config::{Config, PlayerConfig};
 use waytify_core::engine::{Engine, EngineMsg};
 use waytify_ipc::{Command, Status};
@@ -281,6 +282,44 @@ async fn engine_follows_a_live_player() {
              properties a signal happened to carry"
         );
     }
+
+    // Elapsed time has to keep moving between events.
+    //
+    // The daemon publishes on change, and a position advancing smoothly is not a
+    // change, so without a heartbeat the time in the bar freezes until something
+    // else happens to occur. The bar cannot cover for that by interpolating on
+    // its own, because it is sent text the daemon already rendered rather than a
+    // position it could advance.
+    //
+    // Note the mock's own position stays where it is: this is testing that the
+    // interpolated clock reaches clients, not that the player was polled.
+    tx.send(EngineMsg::Attention(Attention::Bar)).await.unwrap();
+    {
+        let mut guard = iface.get_mut().await;
+        guard.status = "Playing".into();
+        guard.playback_status_changed(iface.signal_emitter()).await.unwrap();
+    }
+    wait_for(&mut states, |s| s.status() == Status::Playing).await;
+
+    let started_at = { states.borrow_and_update().player.as_ref().unwrap().position_ms };
+    let advanced = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if states.changed().await.is_err() {
+                return false;
+            }
+            let now = { states.borrow_and_update().player.as_ref().unwrap().position_ms };
+            if now >= started_at + 900 {
+                return true;
+            }
+        }
+    })
+    .await;
+
+    assert_eq!(
+        advanced,
+        Ok(true),
+        "position never advanced while playing, so elapsed time would sit frozen in the bar"
+    );
 
     engine_task.abort();
     let _ = conn.release_name(MOCK_NAME).await;

@@ -123,6 +123,26 @@ recoverable, forever is not.
 Each tick re-reads playback status and position together, and publishes only if
 something actually moved.
 
+### The heartbeat
+
+Reconciliation is about correctness. Keeping the displayed time moving is a
+separate problem with a separate mechanism.
+
+The daemon publishes when state changes, and a position advancing smoothly is not
+a change. Left there, elapsed time freezes between events and only jumps when
+something else happens to occur. The bar cannot cover for this by interpolating
+locally, because rendering happens daemon-side: the bar receives finished text,
+not a position it could advance.
+
+So while playing, and while at least one client is connected, the daemon
+republishes once a second. It costs no D-Bus traffic, just a clone and a channel
+send, and the position it publishes comes from the interpolated clock rather than
+from the player. With no clients connected there is no heartbeat, so an idle
+machine still does nothing.
+
+This is the cost of rendering daemon-side. It buys one config file and clients
+with no formatting logic, and it means the daemon owns the refresh cadence too.
+
 Two more details. The clock is frozen while the scrubber is being dragged, so
 the thumb does not fight the pointer, and it re-anchors optimistically on
 release rather than waiting for the player to confirm. And an observed position
