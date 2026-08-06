@@ -309,23 +309,24 @@ mod tests {
     }
 
     fn playing_state() -> State {
-        let mut s = State::default();
-        s.player = Some(Player {
-            bus_name: "org.mpris.MediaPlayer2.spotify".into(),
-            identity: "Spotify".into(),
-            status: Status::Playing,
-            track: Some(Track {
-                title: "Digital Love".into(),
-                artists: vec!["Daft Punk".into()],
-                album: Some("Discovery".into()),
-                length_ms: Some(301_000),
-                ..Default::default()
+        State {
+            player: Some(Player {
+                bus_name: "org.mpris.MediaPlayer2.spotify".into(),
+                identity: "Spotify".into(),
+                status: Status::Playing,
+                track: Some(Track {
+                    title: "Digital Love".into(),
+                    artists: vec!["Daft Punk".into()],
+                    album: Some("Discovery".into()),
+                    length_ms: Some(301_000),
+                    ..Default::default()
+                }),
+                position_ms: 60_000,
+                shuffle: None,
+                repeat: None,
             }),
-            position_ms: 60_000,
-            shuffle: None,
-            repeat: None,
-        });
-        s
+            ..Default::default()
+        }
     }
 
     #[test]

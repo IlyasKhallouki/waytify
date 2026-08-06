@@ -176,7 +176,8 @@ impl Engine {
             candidates.push(mpris::Candidate { bus_name: name.to_string(), status });
         }
 
-        let chosen = mpris::select(&candidates, &self.config.player.preferred).map(|c| c.bus_name.clone());
+        let chosen =
+            mpris::select(&candidates, &self.config.player.preferred).map(|c| c.bus_name.clone());
 
         match chosen {
             Some(bus) => {
@@ -192,10 +193,7 @@ impl Engine {
     }
 
     async fn player_proxy(&self, bus_name: &str) -> Result<PlayerProxy<'static>> {
-        Ok(PlayerProxy::builder(&self.conn)
-            .destination(bus_name.to_string())?
-            .build()
-            .await?)
+        Ok(PlayerProxy::builder(&self.conn).destination(bus_name.to_string())?.build().await?)
     }
 
     async fn attach(&mut self, bus_name: &str) -> Result<()> {
@@ -203,15 +201,15 @@ impl Engine {
 
         // A player that does not answer for its own name still plays music, so
         // fall back to the bus name rather than refusing to attach.
-        let identity = match MediaPlayer2Proxy::builder(&self.conn).destination(bus_name.to_string())
-        {
-            Ok(b) => match b.build().await {
-                Ok(p) => p.identity().await.ok(),
+        let identity =
+            match MediaPlayer2Proxy::builder(&self.conn).destination(bus_name.to_string()) {
+                Ok(b) => match b.build().await {
+                    Ok(p) => p.identity().await.ok(),
+                    Err(_) => None,
+                },
                 Err(_) => None,
-            },
-            Err(_) => None,
-        }
-        .unwrap_or_else(|| mpris::short_name(bus_name).to_string());
+            }
+            .unwrap_or_else(|| mpris::short_name(bus_name).to_string());
 
         let watcher = tokio::spawn(watch_player(
             self.conn.clone(),
@@ -249,7 +247,8 @@ impl Engine {
         let Some(a) = &self.attached else { return Ok(()) };
         let player = a.player.clone();
 
-        let status = player.playback_status().await.map(|s| mpris::parse_status(&s)).unwrap_or_default();
+        let status =
+            player.playback_status().await.map(|s| mpris::parse_status(&s)).unwrap_or_default();
         let track = player.metadata().await.ok().and_then(|m| metadata::track_from_metadata(&m));
         let position_ms = player.position().await.map(us_to_ms).unwrap_or(0);
         // Spotify reports these unreliably, so a failure means "unknown" rather
@@ -302,7 +301,8 @@ impl Engine {
             let md: Result<Metadata, _> = v.clone().try_into();
             if let Ok(md) = md {
                 let track = metadata::track_from_metadata(&md);
-                let changed_track = self.state.track().map(|t| &t.id) != track.as_ref().map(|t| &t.id);
+                let changed_track =
+                    self.state.track().map(|t| &t.id) != track.as_ref().map(|t| &t.id);
 
                 self.clock.set_length(track.as_ref().and_then(|t| t.length_ms));
                 if let Some(p) = &mut self.state.player {
@@ -416,10 +416,7 @@ impl Engine {
 
             Command::RaisePlayer => {
                 let bus = a.bus_name.clone();
-                let root = MediaPlayer2Proxy::builder(&self.conn)
-                    .destination(bus)?
-                    .build()
-                    .await?;
+                let root = MediaPlayer2Proxy::builder(&self.conn).destination(bus)?.build().await?;
                 root.raise().await?;
             }
 

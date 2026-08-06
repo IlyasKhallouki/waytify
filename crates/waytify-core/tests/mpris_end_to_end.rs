@@ -51,9 +51,15 @@ impl MockPlayer {
         let mut m = HashMap::new();
         // A plain string, not an object path. Real players do this and it is what
         // forces the absolute-seek fallback.
-        m.insert("mpris:trackid".into(), OwnedValue::try_from(Value::from(self.track_id.clone())).unwrap());
+        m.insert(
+            "mpris:trackid".into(),
+            OwnedValue::try_from(Value::from(self.track_id.clone())).unwrap(),
+        );
         m.insert("mpris:length".into(), OwnedValue::try_from(Value::from(self.length_us)).unwrap());
-        m.insert("xesam:title".into(), OwnedValue::try_from(Value::from(self.title.clone())).unwrap());
+        m.insert(
+            "xesam:title".into(),
+            OwnedValue::try_from(Value::from(self.title.clone())).unwrap(),
+        );
         m.insert(
             "xesam:artist".into(),
             OwnedValue::try_from(Value::from(vec![self.artist.clone()])).unwrap(),
@@ -187,10 +193,7 @@ async fn engine_follows_a_live_player() {
     let engine_task = tokio::spawn(engine.run(rx));
 
     // The engine scans on startup, so the mock should already be attached.
-    wait_for(&mut states, |s| {
-        s.track().map(|t| t.title.as_str()) == Some("Digital Love")
-    })
-    .await;
+    wait_for(&mut states, |s| s.track().map(|t| t.title.as_str()) == Some("Digital Love")).await;
 
     {
         let s = states.borrow_and_update();
@@ -215,11 +218,7 @@ async fn engine_follows_a_live_player() {
     assert_eq!(calls.previous.load(Ordering::SeqCst), 0, "only the sent commands should fire");
 
     // A property change should reach the engine without any polling.
-    let iface = conn
-        .object_server()
-        .interface::<_, MockPlayer>(MOCK_PATH)
-        .await
-        .unwrap();
+    let iface = conn.object_server().interface::<_, MockPlayer>(MOCK_PATH).await.unwrap();
     {
         let mut guard = iface.get_mut().await;
         guard.title = "Aerodynamic".into();

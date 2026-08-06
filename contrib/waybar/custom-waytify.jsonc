@@ -1,0 +1,31 @@
+// waytify module for Waybar.
+//
+// Drop this into your Waybar config, or into a file your config `include`s,
+// then add "custom/waytify" to one of your modules-* arrays.
+//
+// There is deliberately no "interval". `waytify bar` is a long-lived process
+// that prints a line whenever something changes, so the module updates on the
+// event rather than on a timer. The daemon starts itself the first time any
+// client needs it.
+//
+// Do not add "escape": true. waytify escapes track metadata itself and leaves
+// your template's markup alone. Waybar's own escaping would double-escape the
+// metadata and break the markup.
+{
+  "custom/waytify": {
+    "exec": "waytify bar",
+    "return-type": "json",
+
+    "on-click": "waytify play-pause",
+    "on-click-right": "waytify next",
+    "on-click-middle": "waytify previous",
+    "on-scroll-up": "waytify seek +10",
+    "on-scroll-down": "waytify seek -10",
+
+    // waytify emits no text at all when nothing is playing, so the module
+    // collapses on its own. max-length keeps a long title from pushing the
+    // rest of the bar around.
+    "max-length": 45,
+    "tooltip": true
+  }
+}

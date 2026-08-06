@@ -134,10 +134,7 @@ mod tests {
     use super::*;
 
     fn md(pairs: Vec<(&str, Value<'static>)>) -> Metadata {
-        pairs
-            .into_iter()
-            .map(|(k, v)| (k.to_string(), OwnedValue::try_from(v).unwrap()))
-            .collect()
+        pairs.into_iter().map(|(k, v)| (k.to_string(), OwnedValue::try_from(v).unwrap())).collect()
     }
 
     fn spotify_like() -> Metadata {
@@ -213,10 +210,7 @@ mod tests {
 
     #[test]
     fn negative_lengths_are_discarded_rather_than_wrapping() {
-        let m = md(vec![
-            ("xesam:title", Value::from("x")),
-            ("mpris:length", Value::from(-1i64)),
-        ]);
+        let m = md(vec![("xesam:title", Value::from("x")), ("mpris:length", Value::from(-1i64))]);
         assert_eq!(track_from_metadata(&m).unwrap().length_ms, None);
     }
 
@@ -277,9 +271,6 @@ mod tests {
                 ),
             ),
         ]);
-        assert_eq!(
-            track_from_metadata(&m).unwrap().id.as_deref(),
-            Some("/com/spotify/track/abc")
-        );
+        assert_eq!(track_from_metadata(&m).unwrap().id.as_deref(), Some("/com/spotify/track/abc"));
     }
 }

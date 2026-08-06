@@ -394,32 +394,40 @@ mod tests {
 
     #[test]
     fn percentage_is_zero_without_a_known_length() {
-        let mut s = State::default();
-        s.player = Some(Player {
-            bus_name: "org.mpris.MediaPlayer2.spotify".into(),
-            identity: "Spotify".into(),
-            status: Status::Playing,
-            track: Some(Track { title: "x".into(), length_ms: None, ..Default::default() }),
-            position_ms: 30_000,
-            shuffle: None,
-            repeat: None,
-        });
+        let s = State {
+            player: Some(Player {
+                bus_name: "org.mpris.MediaPlayer2.spotify".into(),
+                identity: "Spotify".into(),
+                status: Status::Playing,
+                track: Some(Track { title: "x".into(), length_ms: None, ..Default::default() }),
+                position_ms: 30_000,
+                shuffle: None,
+                repeat: None,
+            }),
+            ..Default::default()
+        };
         assert_eq!(s.percentage(), 0, "a live stream has no meaningful progress");
     }
 
     #[test]
     fn percentage_clamps_past_the_end() {
-        let mut s = State::default();
-        s.player = Some(Player {
-            bus_name: "b".into(),
-            identity: "i".into(),
-            status: Status::Playing,
-            track: Some(Track { title: "x".into(), length_ms: Some(10_000), ..Default::default() }),
-            // Interpolation can overshoot the real length between drift corrections.
-            position_ms: 12_000,
-            shuffle: None,
-            repeat: None,
-        });
+        let s = State {
+            player: Some(Player {
+                bus_name: "b".into(),
+                identity: "i".into(),
+                status: Status::Playing,
+                track: Some(Track {
+                    title: "x".into(),
+                    length_ms: Some(10_000),
+                    ..Default::default()
+                }),
+                // Interpolation can overshoot the real length between drift corrections.
+                position_ms: 12_000,
+                shuffle: None,
+                repeat: None,
+            }),
+            ..Default::default()
+        };
         assert_eq!(s.percentage(), 100);
     }
 

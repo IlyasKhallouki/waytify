@@ -1,0 +1,46 @@
+/*
+ * Starting styles for the waytify Waybar module.
+ *
+ * waytify sets a CSS class for the current state, so a stylesheet can react
+ * without any scripting. Copy what you want into your own Waybar stylesheet.
+ *
+ * Classes:
+ *   playing, paused, stopped   current playback state
+ *   no-player                  nothing is running
+ *   liked                      current track is saved to your library
+ *   remote                     playing on a Spotify Connect device
+ *   no-premium                 account connected but cannot control playback
+ *
+ * The last three arrive with the Spotify layer. Styling them now is safe.
+ */
+
+#custom-waytify {
+  padding: 0 10px;
+  margin: 0 4px;
+  border-radius: 12px;
+}
+
+#custom-waytify.playing {
+  color: #a6e3a1;
+}
+
+#custom-waytify.paused {
+  color: #6c7086;
+}
+
+/* Nothing is running. waytify already emits empty text here, so this only
+ * removes the padding that would otherwise leave a visible gap. */
+#custom-waytify.no-player {
+  padding: 0;
+  margin: 0;
+}
+
+#custom-waytify.liked {
+  color: #f38ba8;
+}
+
+/* Audio is coming out of another device, so the local bar is a remote control
+ * rather than a status readout. Worth looking different. */
+#custom-waytify.remote {
+  background-color: rgba(137, 180, 250, 0.15);
+}

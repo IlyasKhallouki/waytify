@@ -12,7 +12,7 @@ pub mod paths;
 pub mod state;
 
 pub use state::{
-    ArtColors, Audio, Caps, Device, Lyrics, LyricLine, Player, Repeat, Sink, Spotify, State,
+    ArtColors, Audio, Caps, Device, LyricLine, Lyrics, Player, Repeat, Sink, Spotify, State,
     Status, Track, VolumeRoute,
 };
 
@@ -65,28 +65,44 @@ pub enum Command {
     Next,
     Previous,
     /// Absolute seek within the current track.
-    Seek { position_ms: u64 },
+    Seek {
+        position_ms: u64,
+    },
     /// Relative seek. Negative rewinds. The daemon clamps to track bounds.
-    SeekBy { delta_ms: i64 },
+    SeekBy {
+        delta_ms: i64,
+    },
 
     ToggleShuffle,
-    SetShuffle { on: bool },
+    SetShuffle {
+        on: bool,
+    },
     CycleRepeat,
-    SetRepeat { mode: Repeat },
+    SetRepeat {
+        mode: Repeat,
+    },
 
     /// Absolute volume, 0 to 100. The daemon decides whether that means the local
     /// PipeWire stream or a remote Connect device. See [`VolumeRoute`].
-    SetVolume { percent: u8 },
+    SetVolume {
+        percent: u8,
+    },
     /// Relative volume, clamped to 0 to 100 by the daemon.
-    VolumeBy { delta: i8 },
+    VolumeBy {
+        delta: i8,
+    },
     ToggleMute,
 
     /// Save or unsave the current track. Requires an authorized Spotify account.
     ToggleLike,
     /// Move playback to another Spotify Connect device. Requires Premium.
-    TransferTo { device_id: String },
+    TransferTo {
+        device_id: String,
+    },
     /// Move the player's local audio stream to a different PipeWire sink.
-    SetSink { sink_name: String },
+    SetSink {
+        sink_name: String,
+    },
 
     /// Show the popup if hidden, hide it if shown. `at` anchors it to the click,
     /// which is how the popup lands on whichever monitor was clicked.

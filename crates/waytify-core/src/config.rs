@@ -96,9 +96,17 @@ impl Icons {
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
     #[error("could not read {path}: {source}")]
-    Read { path: String, #[source] source: std::io::Error },
+    Read {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
     #[error("{path} is not valid TOML: {source}")]
-    Parse { path: String, #[source] source: toml::de::Error },
+    Parse {
+        path: String,
+        #[source]
+        source: toml::de::Error,
+    },
 }
 
 impl Config {
@@ -146,7 +154,8 @@ mod tests {
 
     #[test]
     fn paused_falls_back_to_the_playing_format() {
-        let cfg = BarConfig { format: "P {title}".into(), format_paused: None, ..Default::default() };
+        let cfg =
+            BarConfig { format: "P {title}".into(), format_paused: None, ..Default::default() };
         assert_eq!(cfg.template(Status::Paused), "P {title}");
     }
 
