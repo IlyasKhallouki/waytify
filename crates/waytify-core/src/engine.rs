@@ -33,12 +33,19 @@ pub enum EngineMsg {
     Attention(Attention),
 }
 
-/// A signal from the player we are currently attached to.
+/// Something that happened outside the main loop and needs folding into state.
 #[derive(Debug)]
 enum PlayerEvent {
     Properties(HashMap<String, OwnedValue>),
     /// Position in microseconds. Not every player sends this.
     Seeked(i64),
+    /// Album art finished downloading. Carries the cache key it was fetched for,
+    /// because the track can change while a download is in flight.
+    Artwork {
+        key: String,
+        path: std::path::PathBuf,
+        colors: Option<waytify_ipc::ArtColors>,
+    },
 }
 
 /// How far the interpolated position may disagree with the player before it is
@@ -297,6 +304,7 @@ impl Engine {
             p.repeat = repeat;
         }
         self.recompute_caps();
+        self.request_artwork();
         self.publish();
         Ok(())
     }
@@ -308,7 +316,47 @@ impl Engine {
                 self.publish();
             }
             PlayerEvent::Properties(changed) => self.apply_properties(changed).await,
+            PlayerEvent::Artwork { key, path, colors } => {
+                // A skip during the download means this art belongs to a track
+                // that is no longer showing. Dropping it is correct; the current
+                // track has its own fetch already running.
+                let current = self.state.track().and_then(crate::art::key_for);
+                if current.as_deref() != Some(key.as_str()) {
+                    return;
+                }
+                if let Some(track) = self.state.player.as_mut().and_then(|p| p.track.as_mut()) {
+                    track.art_path = Some(path);
+                    track.colors = colors;
+                }
+                self.publish();
+            }
         }
+    }
+
+    /// Fetch artwork for the current track, if it has any and we lack it.
+    ///
+    /// Spawned rather than awaited: a cover image is a network round trip, and
+    /// blocking the loop on it would stall every other event behind it.
+    fn request_artwork(&self) {
+        let Some(track) = self.state.track() else { return };
+        if track.art_path.is_some() {
+            return;
+        }
+        let (Some(key), Some(url)) = (crate::art::key_for(track), track.art_url.clone()) else {
+            return;
+        };
+
+        let events = self.events_tx.clone();
+        tokio::spawn(async move {
+            match crate::art::fetch(&url, &key, crate::art::DEFAULT_SURFACE).await {
+                Ok(art) => {
+                    let event = PlayerEvent::Artwork { key, path: art.path, colors: art.colors };
+                    let _ = events.send(event).await;
+                }
+                // Missing art is a cosmetic loss, not a failure worth surfacing.
+                Err(e) => tracing::debug!("could not fetch album art: {e:#}"),
+            }
+        });
     }
 
     async fn apply_properties(&mut self, changed: HashMap<String, OwnedValue>) {
@@ -395,6 +443,7 @@ impl Engine {
             }
             self.refresh_position(now).await;
             self.recompute_caps();
+            self.request_artwork();
             self.publish();
         }
     }

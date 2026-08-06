@@ -17,7 +17,7 @@ const ART_SIZE: i32 = 96;
 
 pub struct Ui {
     pub root: gtk4::Box,
-    art: gtk4::Picture,
+    art: gtk4::Image,
     art_placeholder: gtk4::Box,
     title: gtk4::Label,
     artist: gtk4::Label,
@@ -53,10 +53,13 @@ impl Ui {
         let header = gtk4::Box::new(gtk4::Orientation::Horizontal, 14);
         header.add_css_class("waytify-header");
 
-        let art = gtk4::Picture::new();
+        // Image rather than Picture. A Picture reports the image's own resolution
+        // as its natural size and has no maximum, so a 640px cover stretches the
+        // layout to whatever it feels like. Image::set_pixel_size is the API that
+        // actually means "draw it this big".
+        let art = gtk4::Image::new();
         art.add_css_class("waytify-art");
-        art.set_size_request(ART_SIZE, ART_SIZE);
-        art.set_content_fit(gtk4::ContentFit::Cover);
+        art.set_pixel_size(ART_SIZE);
 
         // A separate widget rather than a fallback image, so a theme can style
         // "no art yet" differently from art that happens to be dark.
@@ -279,7 +282,7 @@ impl Ui {
     fn set_art(&self, path: Option<&std::path::Path>) {
         match path {
             Some(p) if p.exists() => {
-                self.art.set_filename(Some(p));
+                self.art.set_from_file(Some(p));
                 self.art.set_visible(true);
                 self.art_placeholder.set_visible(false);
             }

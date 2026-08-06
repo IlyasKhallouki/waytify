@@ -12,7 +12,7 @@ pub mod paths;
 pub mod state;
 
 pub use state::{
-    ArtColors, Audio, Caps, Device, LyricLine, Lyrics, Player, Repeat, Sink, Spotify, State,
+    ArtColors, Audio, Caps, Device, LyricLine, Lyrics, Player, Repeat, Rgb, Sink, Spotify, State,
     Status, Track, VolumeRoute,
 };
 

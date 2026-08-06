@@ -7,6 +7,7 @@
 //!
 //! Clients never see this crate. They see `waytify_ipc` types over a socket.
 
+pub mod art;
 pub mod clock;
 pub mod config;
 pub mod engine;
