@@ -84,6 +84,13 @@ enum Role {
 
     /// Print a fully commented default config file.
     Config,
+
+    /// Run a fake MPRIS player, for testing without a real one.
+    ///
+    /// Produces no audio. Useful for trying the window, for reproducing a bug
+    /// without involving your music, and for checking that waytify sees players
+    /// at all on a machine where it seems not to.
+    MockPlayer,
 }
 
 #[derive(Clone, Copy, clap::ValueEnum)]
@@ -105,7 +112,9 @@ impl From<RepeatArg> for Repeat {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    init_tracing(matches!(cli.command, Role::Daemon));
+    // Long-running roles log at info; one-shot commands stay quiet unless
+    // something is wrong.
+    init_tracing(matches!(cli.command, Role::Daemon | Role::MockPlayer));
 
     let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
     runtime.block_on(dispatch(cli))
@@ -144,6 +153,7 @@ async fn dispatch(cli: Cli) -> Result<()> {
             print!("{}", default_config_toml()?);
             return Ok(());
         }
+        Role::MockPlayer => return waytify_core::mock::run_standalone().await,
 
         Role::PlayPause => Cmd::PlayPause,
         Role::Play => Cmd::Play,
@@ -185,10 +195,10 @@ fn parse_point(arg: &Option<String>) -> Result<Option<waytify_ipc::Point>> {
 
 /// Log to stderr. The bar writes its payload to stdout, so anything else on that
 /// stream would reach Waybar as a malformed module update.
-fn init_tracing(is_daemon: bool) {
+fn init_tracing(long_running: bool) {
     use tracing_subscriber::{EnvFilter, fmt};
 
-    let default = if is_daemon { "info" } else { "warn" };
+    let default = if long_running { "info" } else { "warn" };
     let filter = EnvFilter::try_from_env("WAYTIFY_LOG").unwrap_or_else(|_| EnvFilter::new(default));
 
     fmt().with_env_filter(filter).with_writer(std::io::stderr).with_target(false).init();

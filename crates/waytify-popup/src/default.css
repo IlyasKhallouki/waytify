@@ -128,3 +128,20 @@
 #waytify-popup.offline {
   opacity: 0.6;
 }
+
+/* The two layer-shell windows themselves, as opposed to their contents.
+ *
+ * Both are transparent so the desktop shows through: the popup's rounded corners
+ * need it to avoid a square of theme background behind them, and the click
+ * catcher must not tint the screen while it is up.
+ *
+ * A theme wanting a dimmed backdrop while the popup is open sets a background on
+ * .waytify-backdrop rather than removing this. */
+#waytify-window,
+#waytify-dismiss {
+  background: transparent;
+}
+
+#waytify-dismiss .waytify-backdrop {
+  background: transparent;
+}

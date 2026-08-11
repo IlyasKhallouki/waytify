@@ -15,6 +15,12 @@ use waytify_ipc::{Command, State, Status};
 /// cover art is.
 const ART_SIZE: i32 = 96;
 
+/// How long the scrubber has to stop moving before the seek is sent.
+///
+/// Long enough that a drag produces one seek at the end rather than one per
+/// motion event, short enough that a single click still feels immediate.
+const SEEK_SETTLE: std::time::Duration = std::time::Duration::from_millis(150);
+
 pub struct Ui {
     pub root: gtk4::Box,
     art: gtk4::Image,
@@ -168,44 +174,53 @@ impl Ui {
             });
         }
 
-        // Take the seek on release rather than continuously. Sending on every
-        // motion event would put a D-Bus call behind every pixel of the drag.
-        let drag = gtk4::GestureClick::new();
-        {
-            let dragging = Rc::clone(&self.dragging);
-            drag.connect_pressed(move |_, _, _, _| dragging.set(true));
-        }
-        {
-            let dragging = Rc::clone(&self.dragging);
-            let length = Rc::clone(&self.length_ms);
-            let client = Rc::clone(client);
-            let scrubber = self.scrubber.clone();
-            drag.connect_released(move |_, _, _, _| {
-                dragging.set(false);
-                let len = length.get();
-                if len == 0 {
-                    return;
-                }
-                let position_ms = (scrubber.value().clamp(0.0, 1.0) * len as f64) as u64;
-                client.send(Command::Seek { position_ms });
-            });
-        }
-        self.scrubber.add_controller(drag);
+        // Seeking is driven from `change-value`, which is the signal GtkScale
+        // emits for user-initiated changes only, so it cannot be confused with
+        // the position being written in from the daemon.
+        //
+        // A GestureClick on the scale does not work here: the scale claims the
+        // pointer sequence with its own internal drag gesture, so an added click
+        // gesture never sees the press or the release. Rather than fight it for
+        // release detection, the seek fires once the value stops changing. That
+        // behaves like release for a drag, and like an immediate seek for a click,
+        // without needing to know which one happened.
+        let pending = Rc::new(Cell::new(0u64));
+        let debounce: Rc<std::cell::RefCell<Option<glib::SourceId>>> =
+            Rc::new(std::cell::RefCell::new(None));
 
-        // While dragging, keep the elapsed label under the thumb so the drag
-        // reads as a scrub rather than a slider with a lagging number.
-        {
-            let dragging = Rc::clone(&self.dragging);
-            let length = Rc::clone(&self.length_ms);
-            let elapsed = self.elapsed.clone();
-            self.scrubber.connect_value_changed(move |scale| {
-                if !dragging.get() {
-                    return;
-                }
-                let at = (scale.value().clamp(0.0, 1.0) * length.get() as f64) as u64;
-                elapsed.set_text(&format_time(at));
-            });
-        }
+        let dragging = Rc::clone(&self.dragging);
+        let length = Rc::clone(&self.length_ms);
+        let elapsed = self.elapsed.clone();
+        let client = Rc::clone(client);
+
+        self.scrubber.connect_change_value(move |_, _, value| {
+            let len = length.get();
+            if len == 0 {
+                return glib::Propagation::Proceed;
+            }
+
+            let position_ms = (value.clamp(0.0, 1.0) * len as f64) as u64;
+            pending.set(position_ms);
+            // Freeze incoming positions and move the label with the thumb, so the
+            // drag reads as a scrub rather than a slider with a lagging number.
+            dragging.set(true);
+            elapsed.set_text(&format_time(position_ms));
+
+            if let Some(previous) = debounce.borrow_mut().take() {
+                previous.remove();
+            }
+            let client = Rc::clone(&client);
+            let dragging = Rc::clone(&dragging);
+            let pending = Rc::clone(&pending);
+            let debounce_inner = Rc::clone(&debounce);
+            *debounce.borrow_mut() = Some(glib::timeout_add_local_once(SEEK_SETTLE, move || {
+                client.send(Command::Seek { position_ms: pending.get() });
+                dragging.set(false);
+                debounce_inner.borrow_mut().take();
+            }));
+
+            glib::Propagation::Proceed
+        });
     }
 
     /// Write a state onto the widgets.
@@ -338,17 +353,20 @@ fn format_time(ms: u64) -> String {
 }
 
 /// Drain updates from the daemon into the widgets, on the GTK thread.
-pub fn drive(ui: Rc<Ui>, window: gtk4::ApplicationWindow, client: Rc<Client>) {
+pub fn drive(ui: Rc<Ui>, popup: Rc<crate::window::Popup>, client: Rc<Client>) {
     glib::spawn_future_local(async move {
         while let Ok(update) = client.updates.recv().await {
             match update {
-                crate::client::Update::State(state) => ui.render(&state),
-                crate::client::Update::Popup(action) => crate::window::apply(&window, action),
+                crate::client::Update::State(state) => {
+                    popup.set_offline(false);
+                    ui.render(&state);
+                }
+                crate::client::Update::Popup(action) => popup.apply(action),
                 crate::client::Update::Disconnected => {
                     // Keep the last state on screen. A window that empties itself
                     // because a background service restarted is worse than one
                     // showing something a second out of date.
-                    ui.root.add_css_class("offline");
+                    popup.set_offline(true);
                 }
                 crate::client::Update::Incompatible(message) => {
                     tracing::error!("{message}");

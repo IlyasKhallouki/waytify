@@ -253,7 +253,7 @@ async fn run_command(ctx: &Arc<Ctx>, command: Command) -> Frame {
     // Window commands never reach the engine. The engine has no window and no way
     // to know whether one is currently visible; the popup process owns that.
     if let Some(action) = as_popup_action(&command) {
-        return route_popup(ctx, action);
+        return route_popup(ctx, anchor(action).await);
     }
 
     let (reply, answer) = tokio::sync::oneshot::channel();
@@ -267,6 +267,24 @@ async fn run_command(ctx: &Arc<Ctx>, command: Command) -> Frame {
         Ok(Ok(Err(message))) => Frame::Error { message },
         Ok(Err(_)) => Frame::Error { message: "the engine stopped before answering".into() },
         Err(_) => Frame::Error { message: "the player did not respond in time".into() },
+    }
+}
+
+/// Fill in a missing anchor with the pointer position.
+///
+/// Resolved here rather than in the client so that every way of opening the
+/// window behaves the same, whether it came from a bar click, a keybind, or
+/// another script. A compositor that cannot answer leaves it unset, and the
+/// window falls back to a fixed corner.
+async fn anchor(action: PopupAction) -> PopupAction {
+    match action {
+        PopupAction::Show { at: None } => {
+            PopupAction::Show { at: waytify_core::compositor::cursor_position().await }
+        }
+        PopupAction::Toggle { at: None } => {
+            PopupAction::Toggle { at: waytify_core::compositor::cursor_position().await }
+        }
+        other => other,
     }
 }
 
