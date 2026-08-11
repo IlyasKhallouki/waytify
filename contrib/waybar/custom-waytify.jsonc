@@ -27,9 +27,12 @@
     // track. This respawns it a second later instead.
     "restart-interval": 1,
 
-    "on-click": "waytify play-pause",
+    // Left click opens the player window, because that is the thing you cannot
+    // reach any other way. Transport is still one click away on the other
+    // buttons, and the window has its own controls once open.
+    "on-click": "waytify toggle",
     "on-click-right": "waytify next",
-    "on-click-middle": "waytify previous",
+    "on-click-middle": "waytify play-pause",
     "on-scroll-up": "waytify seek +10",
     "on-scroll-down": "waytify seek -10",
 

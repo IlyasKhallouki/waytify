@@ -90,9 +90,9 @@ Add a module:
   "exec": "waytify bar",
   "return-type": "json",
   "restart-interval": 1,
-  "on-click": "waytify play-pause",
+  "on-click": "waytify toggle",
   "on-click-right": "waytify next",
-  "on-click-middle": "waytify previous",
+  "on-click-middle": "waytify play-pause",
   "on-scroll-up": "waytify seek +10",
   "on-scroll-down": "waytify seek -10",
   "max-length": 45
@@ -100,6 +100,10 @@ Add a module:
 ```
 
 Then put `custom/waytify` in one of your `modules-*` arrays.
+
+Left click opens the player window. That binding matters more than it looks: with
+transport on the left button there is nothing that opens the window, and the
+whole thing looks like a text label that pauses music.
 
 There is no `interval`. `waytify bar` is a long-lived process that prints a line
 when something changes, so the bar updates on the event rather than on a timer.
