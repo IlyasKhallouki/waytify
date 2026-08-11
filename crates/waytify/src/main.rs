@@ -173,13 +173,14 @@ async fn dispatch(cli: Cli) -> Result<()> {
                 !client_id.is_empty(),
                 "no Spotify client id configured.\n\n\
                  Register an application at https://developer.spotify.com/dashboard, \
-                 add http://127.0.0.1:0/callback as a redirect URI (any port; waytify \
-                 picks a free one and tells Spotify which), then put the client id in \
-                 {}:\n\n[spotify]\nclient_id = \"...\"",
+                 add http://127.0.0.1:{}/callback as a redirect URI, then put the \
+                 client id in {}:\n\n[spotify]\nclient_id = \"...\"",
+                config.spotify.redirect_port,
                 path.display()
             );
 
-            let tokens = waytify_core::spotify::auth::login(client_id).await?;
+            let tokens =
+                waytify_core::spotify::auth::login(client_id, config.spotify.redirect_port).await?;
             waytify_core::spotify::auth::save_refresh_token(&tokens.refresh)?;
             println!("Spotify connected. Restart the daemon with `waytify stop` to pick it up.");
             return Ok(());

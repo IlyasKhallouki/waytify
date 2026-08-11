@@ -66,6 +66,13 @@ pub struct Client {
     /// Set when Spotify has told us to back off, and honoured until it passes.
     throttled_until: Option<Instant>,
     premium: Option<bool>,
+    /// Set when Spotify refuses a library call outright.
+    ///
+    /// It means this token cannot read or change saved tracks at all, usually
+    /// because the application is still in development mode and the account is
+    /// not on its allowlist. Recorded so the like button can disappear rather
+    /// than sit there failing on every click.
+    library_forbidden: bool,
 }
 
 impl Client {
@@ -77,6 +84,7 @@ impl Client {
             next_allowed: Instant::now(),
             throttled_until: None,
             premium: None,
+            library_forbidden: false,
         })
     }
 
@@ -86,6 +94,11 @@ impl Client {
 
     pub fn premium(&self) -> Option<bool> {
         self.premium
+    }
+
+    /// Whether saved-track calls are worth making at all.
+    pub fn library_available(&self) -> bool {
+        !self.library_forbidden
     }
 
     /// Adopt a stored refresh token, exchanging it for a usable access token.
@@ -190,22 +203,55 @@ impl Client {
         bail!("Spotify returned {status}: {body}")
     }
 
-    /// Whether the account can use playback controls. Cached: it does not change
-    /// within a session, and asking repeatedly would spend rate limit on it.
-    pub async fn check_premium(&mut self) -> Result<bool> {
-        if let Some(known) = self.premium {
-            return Ok(known);
+    /// Whether the account can use playback controls.
+    ///
+    /// Cached, because it does not change within a session and asking repeatedly
+    /// would spend rate limit on it.
+    ///
+    /// `None` means Spotify did not say, which is not the same as free. It
+    /// happens when the token lacks `user-read-private`, and treating it as free
+    /// would hide controls that work. Left unknown, the first write decides.
+    pub async fn check_premium(&mut self) -> Result<Option<bool>> {
+        if self.premium.is_some() {
+            return Ok(self.premium);
         }
         let me: Me = self.get_json("/me").await?;
-        let premium = me.product.as_deref() == Some("premium");
-        self.premium = Some(premium);
-        Ok(premium)
+        tracing::debug!(product = ?me.product, "account product");
+
+        let Some(product) = me.product.as_deref() else {
+            tracing::warn!(
+                "Spotify did not report the subscription level, so playback \
+                 controls stay available until one is refused. Logging in again \
+                 picks up the scope that reports it."
+            );
+            return Ok(None);
+        };
+        self.premium = Some(product == "premium");
+        Ok(self.premium)
     }
 
     /// Whether a track is in the user's library.
     pub async fn is_saved(&mut self, track_id: &str) -> Result<bool> {
-        let saved: Vec<bool> =
-            self.get_json(&format!("/me/tracks/contains?ids={track_id}")).await?;
+        let response = self
+            .request(reqwest::Method::GET, &format!("/me/tracks/contains?ids={track_id}"), None)
+            .await?;
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+
+        if status == reqwest::StatusCode::FORBIDDEN {
+            self.library_forbidden = true;
+            bail!(
+                "Spotify refused access to your library. If the application is in \
+                 development mode, add this account under User Management in the \
+                 dashboard."
+            );
+        }
+        if !status.is_success() {
+            bail!("Spotify returned {status}: {body}");
+        }
+
+        let saved: Vec<bool> = serde_json::from_str(&body)
+            .with_context(|| format!("unexpected saved-track response: {body}"))?;
         Ok(saved.first().copied().unwrap_or(false))
     }
 
@@ -213,6 +259,9 @@ impl Client {
         let method = if saved { reqwest::Method::PUT } else { reqwest::Method::DELETE };
         let response = self.request(method, &format!("/me/tracks?ids={track_id}"), None).await?;
         let status = response.status();
+        if status == reqwest::StatusCode::FORBIDDEN {
+            self.library_forbidden = true;
+        }
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
             bail!("Spotify returned {status}: {body}");

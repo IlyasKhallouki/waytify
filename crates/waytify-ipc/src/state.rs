@@ -227,7 +227,11 @@ pub struct Device {
     pub volume_percent: Option<u8>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+fn yes() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Spotify {
     /// False until the OAuth flow has completed at least once.
     pub authorized: bool,
@@ -242,9 +246,27 @@ pub struct Spotify {
     /// Full scope only.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub queue: Vec<Track>,
+    /// False once Spotify has refused a library call, which happens when an
+    /// application in development mode has not allowlisted this account. The
+    /// like button hides rather than failing on every press.
+    #[serde(default = "yes")]
+    pub library_available: bool,
     /// Id of the device playback is currently on, when Spotify reports one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_device: Option<String>,
+}
+
+impl Default for Spotify {
+    fn default() -> Self {
+        Self {
+            authorized: false,
+            premium: None,
+            devices: Vec::new(),
+            queue: Vec::new(),
+            library_available: true,
+            active_device: None,
+        }
+    }
 }
 
 impl Spotify {
@@ -253,8 +275,13 @@ impl Spotify {
     }
 
     /// True when writes to `/me/player/*` are expected to succeed.
+    ///
+    /// Unknown counts as allowed. Spotify only reports the subscription level to
+    /// a token holding `user-read-private`, and refusing to offer a control that
+    /// probably works is worse than one refused attempt: the first 403 records
+    /// the answer and the control disappears from then on.
     pub fn can_control_remote(&self) -> bool {
-        self.authorized && self.premium == Some(true)
+        self.authorized && self.premium != Some(false)
     }
 }
 
@@ -459,7 +486,10 @@ mod tests {
         assert!(!spotify.can_control_remote(), "no account means no remote control");
 
         spotify.authorized = true;
-        assert!(!spotify.can_control_remote(), "premium is unknown, so do not assume it");
+        assert!(
+            spotify.can_control_remote(),
+            "unknown must not hide a control that probably works; a refusal records it"
+        );
 
         spotify.premium = Some(false);
         assert!(!spotify.can_control_remote(), "a free account cannot write to /me/player");

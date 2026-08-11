@@ -15,7 +15,7 @@ pub struct Config {
     pub spotify: SpotifyConfig,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct SpotifyConfig {
     /// Your own Spotify application's client id.
@@ -28,6 +28,19 @@ pub struct SpotifyConfig {
     ///
     /// Empty means the Spotify layer is off, and everything else works as usual.
     pub client_id: String,
+
+    /// Local port the login redirect comes back on.
+    ///
+    /// Spotify matches redirect URIs exactly, so this has to be the port in the
+    /// URI registered with the application rather than whatever happens to be
+    /// free. Change both together if 8888 is taken on your machine.
+    pub redirect_port: u16,
+}
+
+impl Default for SpotifyConfig {
+    fn default() -> Self {
+        Self { client_id: String::new(), redirect_port: 8888 }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

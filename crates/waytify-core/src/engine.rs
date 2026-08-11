@@ -52,6 +52,8 @@ enum PlayerEvent {
         track_id: String,
         liked: bool,
     },
+    /// Spotify refused a library call, so likes are not usable with this token.
+    LibraryUnavailable,
     /// The Spotify Connect device list, and whether the account can control it.
     Devices {
         devices: Vec<waytify_ipc::Device>,
@@ -410,6 +412,18 @@ impl Engine {
                 self.recompute_caps();
                 self.publish();
             }
+            PlayerEvent::LibraryUnavailable => {
+                if self.state.spotify.library_available {
+                    tracing::warn!(
+                        "Spotify refused access to the library, so the like button is \
+                         hidden. If the application is in development mode, add this \
+                         account under User Management in the dashboard."
+                    );
+                }
+                self.state.spotify.library_available = false;
+                self.recompute_caps();
+                self.publish();
+            }
             PlayerEvent::Devices { devices, premium } => {
                 self.state.spotify.devices = devices;
                 if let Some(premium) = premium {
@@ -459,7 +473,7 @@ impl Engine {
         match guard.restore(&token).await {
             Ok(()) => {
                 self.state.spotify.authorized = true;
-                let premium = guard.check_premium().await.ok();
+                let premium = guard.check_premium().await.ok().flatten();
                 self.state.spotify.premium = premium;
                 tracing::info!("Spotify connected (premium: {premium:?})");
             }
@@ -469,18 +483,30 @@ impl Engine {
 
     /// Ask whether the current track is in the library.
     fn request_liked(&self) {
+        if !self.state.spotify.library_available {
+            return;
+        }
         let (Some(client), Some(track)) = (&self.spotify, self.state.track()) else { return };
         let Some(track_id) = crate::metadata::spotify_track_id(track) else { return };
 
         let client = Arc::clone(client);
         let events = self.events_tx.clone();
         tokio::spawn(async move {
-            let liked = client.lock().await.is_saved(&track_id).await;
+            let mut guard = client.lock().await;
+            let liked = guard.is_saved(&track_id).await;
+            let available = guard.library_available();
+            drop(guard);
+
             match liked {
                 Ok(liked) => {
                     let _ = events.send(PlayerEvent::Liked { track_id, liked }).await;
                 }
-                Err(e) => tracing::debug!("could not read the saved state: {e:#}"),
+                Err(e) => {
+                    tracing::debug!("could not read the saved state: {e:#}");
+                    if !available {
+                        let _ = events.send(PlayerEvent::LibraryUnavailable).await;
+                    }
+                }
             }
         });
     }
@@ -729,7 +755,12 @@ impl Engine {
             // players report incorrectly. A track with a known length is seekable
             // until proven otherwise.
             can_seek: has_track && has_length,
-            can_like: self.state.spotify.authorized && has_track,
+            // Not merely "a track is playing": liking needs a Spotify catalogue
+            // id, and a YouTube video in a browser tab has none. Showing the
+            // control for one would be offering something that can only fail.
+            can_like: self.state.spotify.authorized
+                && self.state.spotify.library_available
+                && self.state.track().and_then(crate::metadata::spotify_track_id).is_some(),
             can_transfer: self.state.spotify.can_control_remote(),
             can_set_volume: self.state.audio.route != waytify_ipc::VolumeRoute::Unavailable,
             show_free_account_notice: self.state.spotify.authorized

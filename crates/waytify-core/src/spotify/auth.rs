@@ -32,6 +32,10 @@ const KEYRING_USER: &str = "spotify-refresh-token";
 /// library scopes for the like button. Asking for more than is used makes the
 /// consent screen alarming for no benefit.
 pub const SCOPES: &[&str] = &[
+    // Solely to read the subscription level from /me. Without it that field is
+    // omitted rather than empty, and waytify cannot tell whether the playback
+    // controls will work until one of them fails.
+    "user-read-private",
     "user-read-playback-state",
     "user-modify-playback-state",
     "user-read-currently-playing",
@@ -118,15 +122,20 @@ pub async fn refresh(client_id: &str, refresh_token: &str) -> Result<Tokens> {
 }
 
 /// Run the full login: open a browser, catch the redirect, exchange the code.
-pub async fn login(client_id: &str) -> Result<Tokens> {
+pub async fn login(client_id: &str, port: u16) -> Result<Tokens> {
     let verifier = code_verifier();
     let challenge = code_challenge(&verifier);
 
-    // Port zero so the OS picks a free one. A fixed port would collide with
-    // anything else already listening and fail for a reason nobody could guess.
-    let listener =
-        TcpListener::bind("127.0.0.1:0").context("opening a local port for the redirect")?;
-    let port = listener.local_addr()?.port();
+    // A fixed port, not one the OS picks. Spotify matches redirect URIs exactly
+    // against what the application registered, so a random port would never
+    // match and every login would be rejected.
+    let listener = TcpListener::bind(("127.0.0.1", port)).with_context(|| {
+        format!(
+            "opening port {port} for the login redirect. \
+             If something else is using it, change spotify.redirect_port and add \
+             the matching URI to your Spotify application."
+        )
+    })?;
     let redirect_uri = format!("http://127.0.0.1:{port}/callback");
 
     let state = random_string(16);

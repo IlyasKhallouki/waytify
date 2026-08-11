@@ -242,14 +242,18 @@ deliberately does not ship one: Spotify counts rate limits per application, so a
 shared id would mean a shared budget for every user.
 
 1. Open <https://developer.spotify.com/dashboard> and create an app.
-2. Add a redirect URI of `http://127.0.0.1:8888/callback`. waytify actually asks
-   the operating system for a free port and tells Spotify which one it used, so
-   register a few (8888, 8889, 8890) or use whatever port it prints.
+2. Add a redirect URI of `http://127.0.0.1:8888/callback`. Spotify matches
+   redirect URIs exactly, so waytify listens on that specific port rather than
+   whichever one happens to be free. Change `redirect_port` and the registered
+   URI together if 8888 is taken on your machine.
 3. Copy the client id, which is not a secret, into your config:
 
 ```toml
 [spotify]
 client_id = "your-client-id"
+# Must match the port in the redirect URI you registered. Spotify compares
+# redirect URIs exactly, so this cannot be left to chance.
+redirect_port = 8888
 ```
 
 4. Log in once:
@@ -260,6 +264,20 @@ waytify login
 
 That opens a browser, catches the redirect on a local port, and stores a refresh
 token in your system keyring rather than in a file. `waytify logout` forgets it.
+
+### Development mode and the user allowlist
+
+A new application starts in development mode, and in that state Spotify only
+serves the Web API to accounts you have explicitly listed. Everything else works
+and the library endpoints return 403, so the like button disappears while Connect
+devices and transfer keep working.
+
+Add yourself under **User Management** in the app's dashboard page, using the full
+name and email on your Spotify account. Up to five accounts are allowed.
+
+waytify records the refusal the first time it happens and stops asking, rather
+than retrying on every track, and hides the control rather than offering one that
+cannot work.
 
 ### What Premium changes
 
