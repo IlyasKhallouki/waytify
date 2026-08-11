@@ -60,14 +60,34 @@ impl Track {
 
 /// A small playlist with the shapes worth exercising: a normal track, one with no
 /// album, and one long enough to make seeking visible.
+///
+/// Set `WAYTIFY_MOCK_ART` to a `file://` URL or an image path to give every entry
+/// cover art. Without it the tracks have none, which is the case worth looking at
+/// by default since it exercises the placeholder.
 pub fn sample_playlist() -> Vec<Track> {
+    let art = std::env::var("WAYTIFY_MOCK_ART").ok().map(|value| {
+        if value.starts_with("file://") || value.starts_with("http") {
+            value
+        } else {
+            format!("file://{value}")
+        }
+    });
+
+    let with_art = |track: Track| Track { art_url: art.clone().unwrap_or_default(), ..track };
+
     vec![
-        Track::new("mock:track:1", "Digital Love", "Daft Punk", "Discovery", 301),
-        Track {
+        with_art(Track::new("mock:track:1", "Digital Love", "Daft Punk", "Discovery", 301)),
+        with_art(Track {
             album: String::new(),
             ..Track::new("mock:track:2", "Untitled Demo", "Someone", "", 187)
-        },
-        Track::new("mock:track:3", "A Very Long One", "Test Artist", "Long Player", 1_805),
+        }),
+        with_art(Track::new(
+            "mock:track:3",
+            "A Very Long One",
+            "Test Artist",
+            "Long Player",
+            1_805,
+        )),
     ]
 }
 

@@ -4,9 +4,13 @@ Media control for Waybar, built on MPRIS with optional Spotify enrichment.
 
 Written in Rust. Themed with CSS.
 
-> **Status: early.** The bar module and transport controls work today. The GTK4
-> popup, volume routing, Spotify Connect, and lyrics are not built yet. See
-> [roadmap](#roadmap) for what exists and what does not.
+![The waytify module in Waybar](docs/images/bar.png)
+
+![The waytify player window](docs/images/popup.png)
+
+> **Status: early.** The bar module, transport controls and the player window
+> work today. Volume routing, Spotify Connect, likes and lyrics are not built
+> yet. See [roadmap](#roadmap) for what exists and what does not.
 
 ## Why this exists
 
@@ -27,7 +31,10 @@ call in a loop: authors reach the limit of a string and stop there.
 
 waytify splits along that seam. The bar shows what a string can show. Everything
 else lives in a separate window that Waybar knows nothing about, which also
-means the player half will work under any bar, or under none.
+means the player half works under any bar, or under none.
+
+That window is a `gtk4-layer-shell` surface: album art, a real draggable
+scrubber, transport, and a stylesheet you can edit while it is open.
 
 ## Install
 
@@ -109,7 +116,44 @@ first and break the second.
 A copy of this module and a starting stylesheet live in
 [`contrib/waybar/`](contrib/waybar/).
 
+### If your config is generated
+
+Some setups, HyDE among them, rewrite `config.jsonc` whenever the bar layout
+changes, which silently removes `custom/waytify` from wherever you put it.
+
+Dropping the module file into `~/.config/waybar/modules/` survives that, since
+the default config includes that directory by glob. The placement does not. If
+your module disappears after a theme or layout change, add it to your own layout
+file rather than to `config.jsonc`.
+
+## The player window
+
+Clicking the module opens it. It appears on the monitor you clicked, under the
+pointer, and closes on Escape or a click anywhere outside it.
+
+```sh
+waytify toggle          # open under the pointer, or close if already open
+```
+
+For a Hyprland keybind, so it works without a bar at all:
+
+```conf
+bindl = , XF86AudioPlay,  exec, waytify play-pause
+bindl = , XF86AudioNext,  exec, waytify next
+bindl = , XF86AudioPrev,  exec, waytify previous
+bind  = SUPER, M,         exec, waytify toggle
+```
+
+The window is a layer-shell surface rather than a Waybar plugin, so none of this
+depends on Waybar running.
+
+It starts on first use and then stays resident, hidden, so reopening is instant.
+Starting GTK takes long enough that opening it fresh on every click feels broken.
+
 ## Styling
+
+The bar module and the window are styled in two different places, and both are
+documented in full in [`docs/THEMING.md`](docs/THEMING.md).
 
 The module emits CSS classes describing the current state, so you can style it
 from your existing Waybar stylesheet:
@@ -130,6 +174,11 @@ from your existing Waybar stylesheet:
 
 The last three arrive with the Spotify layer and are listed here so a stylesheet
 written now keeps working later.
+
+The window reads `~/.config/waytify/style.css` and reloads it as you save, so you
+can leave it open while you edit. Colours pulled from the current album art are
+available as `@art_vibrant`, `@art_muted` and `@art_on_vibrant` for a theme that
+wants to follow the record.
 
 ## Configuration
 
@@ -195,20 +244,15 @@ waytify shuffle        # toggle
 waytify repeat         # cycle off, playlist, track
 waytify raise          # bring the player's window forward
 
+waytify toggle         # open or close the player window
 waytify status         # current state as JSON
 waytify stop           # stop the daemon
+
+waytify mock-player    # a fake player for testing, produces no audio
 ```
 
 Every command reports its outcome. `waytify next` with nothing running exits
 non-zero and says so, rather than failing quietly in a log you never read.
-
-For Hyprland:
-
-```conf
-bindl = , XF86AudioPlay, exec, waytify play-pause
-bindl = , XF86AudioNext, exec, waytify next
-bindl = , XF86AudioPrev, exec, waytify previous
-```
 
 ## How it works
 
@@ -223,8 +267,9 @@ The **bar client** (`waytify bar`) streams rendered output to stdout and holds n
 state. Format strings live in the daemon's config, so this side has no
 formatting logic to get out of sync.
 
-The **popup**, once built, will be a `gtk4-layer-shell` surface: album art, a
-real scrubber, output device picker, queue, and lyrics.
+The **window** (`waytify popup`) is a `gtk4-layer-shell` surface. It renders
+whatever the daemon last sent and sends commands back, holding no state, so it is
+cheap to kill and restart.
 
 Playback position is interpolated locally rather than polled. The daemon records
 the position it last saw, advances it against the local clock, and re-anchors on
@@ -241,13 +286,15 @@ Each stage is usable on its own.
 
 - [x] **Daemon, bar module, transport.** Works with any MPRIS player, including
       mpv and Firefox. No configuration required.
-- [ ] **The popup.** GTK4 layer-shell surface with art, scrubber, transport, and
-      local volume through PipeWire. Three-layer CSS with hot reload.
+- [x] **The player window.** GTK4 layer-shell surface with album art, a draggable
+      scrubber and transport. Three-layer CSS with hot reload, and album art
+      colours exposed to stylesheets.
+- [ ] **Volume and output routing.** Per-app volume through PipeWire and an
+      output device picker.
 - [ ] **Spotify layer.** OAuth via PKCE, likes, queue, Connect devices, and
       playback transfer. Optional throughout: without it you still have a
       working player.
-- [ ] **Lyrics and art-derived theming.** Synced lyrics from lrclib, plus album
-      art colours exposed to CSS so a theme can follow the record.
+- [ ] **Lyrics.** Synced lyrics from lrclib, scrolling with the position clock.
 
 ### On Spotify Premium
 
