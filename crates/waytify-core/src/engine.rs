@@ -444,10 +444,15 @@ impl Engine {
     /// generate a request every time anything happened.
     async fn restore_spotify(&mut self) {
         let Some(client) = &self.spotify else { return };
-        let token = match crate::spotify::auth::load_refresh_token() {
-            Ok(Some(token)) => token,
-            Ok(None) => return,
-            Err(e) => return tracing::warn!("could not read the stored Spotify token: {e:#}"),
+        // The keyring talks to the secret service over blocking D-Bus, so it goes
+        // on a blocking thread rather than stalling the executor that is also
+        // driving the bar.
+        let stored = tokio::task::spawn_blocking(crate::spotify::auth::load_refresh_token).await;
+        let token = match stored {
+            Ok(Ok(Some(token))) => token,
+            Ok(Ok(None)) => return,
+            Ok(Err(e)) => return tracing::warn!("could not read the stored Spotify token: {e:#}"),
+            Err(e) => return tracing::warn!("reading the keyring panicked: {e}"),
         };
 
         let mut guard = client.lock().await;

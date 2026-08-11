@@ -34,7 +34,7 @@ jobs:
       # dbus so the end-to-end tests have a session bus to serve the mock player
       # on, and libpulse because volume control links against it.
       - name: Install system libraries
-        run: sudo apt-get update && sudo apt-get install -y dbus libpulse-dev
+        run: sudo apt-get update && sudo apt-get install -y dbus libdbus-1-dev libpulse-dev
 
       - name: Test
         run: |
@@ -56,7 +56,7 @@ jobs:
       - name: Install GTK4
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgtk-4-dev libpulse-dev meson ninja-build \
+          sudo apt-get install -y libgtk-4-dev libdbus-1-dev libpulse-dev meson ninja-build \
             libgirepository1.0-dev gobject-introspection
 
       # Ubuntu does not package gtk4-layer-shell, and dropping this job to work
@@ -87,6 +87,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.92.0
       - uses: Swatinem/rust-cache@v2
       - name: Install system libraries
-        run: sudo apt-get update && sudo apt-get install -y libpulse-dev
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev libpulse-dev
       - name: Build the core on the minimum supported Rust version
         run: cargo build -p waytify-ipc -p waytify-core -p waytify-daemon -p waytify-bar
