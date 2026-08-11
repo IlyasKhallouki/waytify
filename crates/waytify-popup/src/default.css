@@ -145,3 +145,61 @@
 #waytify-dismiss .waytify-backdrop {
   background: transparent;
 }
+
+/* Volume and output routing. The whole row is hidden when there is nothing to
+ * control, which is the normal case for a player with no local audio stream. */
+#waytify-popup .waytify-volume button {
+  min-width: 28px;
+  min-height: 28px;
+  border-radius: 50%;
+  color: @waytify_dim;
+  background: none;
+  border: none;
+  box-shadow: none;
+}
+
+#waytify-popup .waytify-volume button:hover {
+  background-color: shade(@waytify_bg, 1.7);
+  color: @waytify_fg;
+}
+
+#waytify-popup .waytify-volume .mute.muted {
+  color: @waytify_accent;
+}
+
+#waytify-popup .volume-slider trough {
+  min-height: 4px;
+  border-radius: 2px;
+  background-color: shade(@waytify_bg, 1.8);
+}
+
+#waytify-popup .volume-slider highlight {
+  border-radius: 2px;
+  background-color: @waytify_dim;
+}
+
+#waytify-popup .volume-slider slider {
+  min-width: 10px;
+  min-height: 10px;
+  border-radius: 50%;
+  background-color: transparent;
+}
+
+#waytify-popup .volume-slider:hover slider {
+  background-color: @waytify_fg;
+}
+
+/* The output picker, shown only when there is more than one device. */
+.waytify-outputs {
+  padding: 4px;
+}
+
+.waytify-outputs .device {
+  padding: 6px 10px;
+  border-radius: 6px;
+  color: @waytify_fg;
+}
+
+.waytify-outputs .device.active {
+  color: @waytify_accent;
+}

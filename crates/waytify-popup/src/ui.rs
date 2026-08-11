@@ -15,6 +15,9 @@ use waytify_ipc::{Command, State, Status};
 /// cover art is.
 const ART_SIZE: i32 = 96;
 
+/// How long the volume slider has to stop moving before the change is sent.
+const VOLUME_SETTLE: std::time::Duration = std::time::Duration::from_millis(60);
+
 /// How long the scrubber has to stop moving before the seek is sent.
 ///
 /// Long enough that a drag produces one seek at the end rather than one per
@@ -34,6 +37,14 @@ pub struct Ui {
     play_pause: gtk4::Button,
     shuffle: gtk4::ToggleButton,
     repeat: gtk4::Button,
+    volume_row: gtk4::Box,
+    volume: gtk4::Scale,
+    mute: gtk4::Button,
+    output: gtk4::MenuButton,
+    output_list: gtk4::Box,
+    /// Sinks currently listed in the picker, so the list is only rebuilt when the
+    /// set of outputs actually changes rather than on every state frame.
+    listed_sinks: std::cell::RefCell<Vec<waytify_ipc::Sink>>,
     /// True while the user has hold of the scrubber. Position updates from the
     /// daemon are ignored during that time, so the thumb does not fight the
     /// pointer, and the label follows the thumb instead.
@@ -44,6 +55,9 @@ pub struct Ui {
     /// Suppresses the handler while state is being written into widgets, so
     /// programmatic updates are not mistaken for user input.
     binding: Rc<Cell<bool>>,
+    /// Kept so the output picker can be rebuilt after construction, when the
+    /// list of sinks changes.
+    client: Rc<Client>,
     /// Last art colours pushed into the stylesheet. State arrives once a second
     /// while playing, and reparsing CSS on each of those for colours that only
     /// change with the track would be wasteful.
@@ -125,8 +139,38 @@ impl Ui {
         transport.append(&next);
         transport.append(&repeat);
 
+        // Volume and output routing.
+        let volume_row = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
+        volume_row.add_css_class("waytify-volume");
+
+        let mute = gtk4::Button::from_icon_name("audio-volume-high-symbolic");
+        mute.add_css_class("mute");
+        mute.add_css_class("flat");
+
+        let volume = gtk4::Scale::with_range(gtk4::Orientation::Horizontal, 0.0, 100.0, 1.0);
+        volume.add_css_class("volume-slider");
+        volume.set_draw_value(false);
+        volume.set_hexpand(true);
+
+        // A menu button rather than a cycle button: there can be any number of
+        // outputs and picking blindly through them is not a control.
+        let output = gtk4::MenuButton::new();
+        output.set_icon_name("audio-headphones-symbolic");
+        output.add_css_class("output");
+        output.add_css_class("flat");
+        let outputs = gtk4::Popover::new();
+        outputs.add_css_class("waytify-outputs");
+        let output_list = gtk4::Box::new(gtk4::Orientation::Vertical, 2);
+        outputs.set_child(Some(&output_list));
+        output.set_popover(Some(&outputs));
+
+        volume_row.append(&mute);
+        volume_row.append(&volume);
+        volume_row.append(&output);
+
         root.append(&header);
         root.append(&scrub_row);
+        root.append(&volume_row);
         root.append(&transport);
 
         let ui = Self {
@@ -142,6 +186,13 @@ impl Ui {
             play_pause,
             shuffle,
             repeat,
+            volume_row,
+            volume,
+            mute,
+            output,
+            output_list,
+            listed_sinks: std::cell::RefCell::new(Vec::new()),
+            client: Rc::clone(&client),
             dragging: Rc::new(Cell::new(false)),
             length_ms: Rc::new(Cell::new(0)),
             binding: Rc::new(Cell::new(false)),
@@ -192,6 +243,44 @@ impl Ui {
         let length = Rc::clone(&self.length_ms);
         let elapsed = self.elapsed.clone();
         let client = Rc::clone(client);
+
+        {
+            let client = Rc::clone(&self.client);
+            self.mute.connect_clicked(move |_| client.send(Command::ToggleMute));
+        }
+
+        // Same settle-then-send shape as the scrubber, for the same reason: a
+        // drag would otherwise produce a request per motion event. Shorter,
+        // because a volume change is a local call rather than a D-Bus round trip
+        // and should feel immediate.
+        {
+            let client = Rc::clone(&self.client);
+            let binding = Rc::clone(&self.binding);
+            let pending = Rc::new(Cell::new(0u8));
+            let debounce: Rc<std::cell::RefCell<Option<glib::SourceId>>> =
+                Rc::new(std::cell::RefCell::new(None));
+
+            self.volume.connect_change_value(move |_, _, value| {
+                if binding.get() {
+                    return glib::Propagation::Proceed;
+                }
+                pending.set(value.clamp(0.0, 100.0) as u8);
+
+                if let Some(previous) = debounce.borrow_mut().take() {
+                    previous.remove();
+                }
+                let client = Rc::clone(&client);
+                let pending = Rc::clone(&pending);
+                let debounce_inner = Rc::clone(&debounce);
+                *debounce.borrow_mut() =
+                    Some(glib::timeout_add_local_once(VOLUME_SETTLE, move || {
+                        client.send(Command::SetVolume { percent: pending.get() });
+                        debounce_inner.borrow_mut().take();
+                    }));
+
+                glib::Propagation::Proceed
+            });
+        }
 
         self.scrubber.connect_change_value(move |_, _, value| {
             let len = length.get();
@@ -291,7 +380,72 @@ impl Ui {
             self.elapsed.set_visible(false);
         }
 
+        self.render_audio(state);
+
         self.binding.set(false);
+    }
+
+    /// Volume, mute and the output picker.
+    ///
+    /// The whole row hides when there is nothing to control. A slider that does
+    /// nothing is worse than no slider, and that is the normal case for a player
+    /// with no local stream.
+    fn render_audio(&self, state: &State) {
+        use waytify_ipc::VolumeRoute;
+
+        let available = state.audio.route != VolumeRoute::Unavailable;
+        self.volume_row.set_visible(available);
+        if !available {
+            return;
+        }
+
+        if let Some(percent) = state.audio.volume {
+            self.volume.set_value(f64::from(percent));
+            let muted = state.audio.muted.unwrap_or(false);
+            self.mute.set_icon_name(volume_icon(percent, muted));
+            if muted {
+                self.mute.add_css_class("muted");
+            } else {
+                self.mute.remove_css_class("muted");
+            }
+        }
+
+        // Only rebuild when the set of outputs changed. State arrives once a
+        // second while playing and rebuilding a list that often would close the
+        // popover under the pointer every time.
+        if *self.listed_sinks.borrow() != state.audio.sinks {
+            self.rebuild_outputs(state);
+            *self.listed_sinks.borrow_mut() = state.audio.sinks.clone();
+        }
+
+        // Nothing to choose between with a single output.
+        self.output.set_visible(state.audio.sinks.len() > 1);
+    }
+
+    fn rebuild_outputs(&self, state: &State) {
+        while let Some(child) = self.output_list.first_child() {
+            self.output_list.remove(&child);
+        }
+
+        for sink in &state.audio.sinks {
+            let row = gtk4::Button::with_label(&sink.description);
+            row.add_css_class("device");
+            row.add_css_class("flat");
+            if Some(&sink.name) == state.audio.active_sink.as_ref() {
+                row.add_css_class("active");
+            }
+
+            let client = Rc::clone(&self.client);
+            let name = sink.name.clone();
+            let popover = self.output.popover();
+            row.connect_clicked(move |_| {
+                client.send(Command::SetSink { sink_name: name.clone() });
+                if let Some(popover) = &popover {
+                    popover.popdown();
+                }
+            });
+            self.output_list.append(&row);
+        }
     }
 
     fn set_art(&self, path: Option<&std::path::Path>) {
@@ -333,6 +487,16 @@ fn toggle(icon: &str, class: &str) -> gtk4::ToggleButton {
     b.add_css_class(class);
     b.add_css_class("flat");
     b
+}
+
+/// Speaker icon matching the level, the way every other volume control does.
+fn volume_icon(percent: u8, muted: bool) -> &'static str {
+    match percent {
+        _ if muted || percent == 0 => "audio-volume-muted-symbolic",
+        1..=33 => "audio-volume-low-symbolic",
+        34..=66 => "audio-volume-medium-symbolic",
+        _ => "audio-volume-high-symbolic",
+    }
 }
 
 fn set_optional(label: &gtk4::Label, text: Option<String>) {

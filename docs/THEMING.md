@@ -64,6 +64,10 @@ anything, and the window does not even need to be closed.
     │   ├── .elapsed
     │   ├── .scrubber               a GtkScale: trough, highlight, slider
     │   └── .duration
+    ├── .waytify-volume             hidden when there is no stream to control
+    │   ├── .mute                   gains .muted when muted
+    │   ├── .volume-slider          a GtkScale
+    │   └── .output                 device picker, hidden with only one output
     └── .waytify-transport
         ├── .shuffle                a GtkToggleButton, so :checked applies
         ├── .prev
@@ -73,7 +77,14 @@ anything, and the window does not even need to be closed.
 
 #waytify-dismiss                    full-screen click catcher, transparent
 └── .waytify-backdrop               style this for a dimmed backdrop
+
+.waytify-outputs                    the output picker popover
+└── .device                         one output, gains .active for the current one
 ```
+
+The volume row disappears entirely when the player has no local audio stream,
+which is normal while nothing is producing sound and always true once playback
+moves to a remote device. A slider that does nothing is worse than no slider.
 
 `#waytify-popup` also carries the same state classes as the bar module, so
 `#waytify-popup.paused` and `#waytify-popup.no-player` work. It additionally

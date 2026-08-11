@@ -8,8 +8,8 @@ Written in Rust. Themed with CSS.
 
 ![The waytify player window](docs/images/popup.png)
 
-> **Status: early.** The bar module, transport controls and the player window
-> work today. Volume routing, Spotify Connect, likes and lyrics are not built
+> **Status: early.** The bar module, transport, the player window, and volume
+> and output routing work today. Spotify Connect, likes and lyrics are not built
 > yet. See [roadmap](#roadmap) for what exists and what does not.
 
 ## Why this exists
@@ -291,8 +291,8 @@ Each stage is usable on its own.
 - [x] **The player window.** GTK4 layer-shell surface with album art, a draggable
       scrubber and transport. Three-layer CSS with hot reload, and album art
       colours exposed to stylesheets.
-- [ ] **Volume and output routing.** Per-app volume through PipeWire and an
-      output device picker.
+- [x] **Volume and output routing.** The player's own volume rather than the
+      system's, through PipeWire, with an output device picker.
 - [ ] **Spotify layer.** OAuth via PKCE, likes, queue, Connect devices, and
       playback transfer. Optional throughout: without it you still have a
       working player.

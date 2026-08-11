@@ -63,12 +63,20 @@ pub struct Engine {
     events_tx: mpsc::Sender<PlayerEvent>,
     events_rx: mpsc::Receiver<PlayerEvent>,
 
+    /// `None` when there is no sound server, which is a normal situation rather
+    /// than an error. Everything else still works; volume simply is not offered.
+    audio: Option<crate::audio::Audio>,
+    audio_rx: Option<tokio::sync::mpsc::UnboundedReceiver<crate::audio::AudioSnapshot>>,
+
     updates: watch::Sender<Arc<State>>,
 }
 
 struct Attached {
     bus_name: String,
     player: PlayerProxy<'static>,
+    /// The process holding the bus name, used to find its audio stream. Asked for
+    /// once on attach rather than per request, since it cannot change.
+    pid: Option<u32>,
     watcher: tokio::task::JoinHandle<()>,
 }
 
@@ -84,6 +92,16 @@ impl Engine {
         let (events_tx, events_rx) = mpsc::channel(64);
         let (updates, _) = watch::channel(Arc::new(State::default()));
 
+        // A desktop with no sound server is unusual but not broken, and refusing
+        // to start over it would take the bar down with it.
+        let (audio, audio_rx) = match crate::audio::Audio::connect() {
+            Ok((audio, rx)) => (Some(audio), Some(rx)),
+            Err(e) => {
+                tracing::info!("volume control unavailable: {e:#}");
+                (None, None)
+            }
+        };
+
         let mut engine = Self {
             conn,
             config,
@@ -93,6 +111,8 @@ impl Engine {
             attached: None,
             events_tx,
             events_rx,
+            audio,
+            audio_rx,
             updates,
         };
         engine.rescan().await?;
@@ -158,6 +178,12 @@ impl Engine {
                     }
                 }
                 Some(ev) = self.events_rx.recv() => self.handle_player_event(ev).await,
+                Some(snapshot) = async {
+                    match self.audio_rx.as_mut() {
+                        Some(rx) => rx.recv().await,
+                        None => std::future::pending().await,
+                    }
+                } => self.apply_audio(snapshot),
                 _ = republish => self.publish(),
                 _ = tick => {
                     let now = Instant::now();
@@ -253,7 +279,17 @@ impl Engine {
             self.events_tx.clone(),
         ));
 
-        self.attached = Some(Attached { bus_name: bus_name.to_string(), player, watcher });
+        // Best effort: a player that will not say which process it is still works,
+        // it just has to be matched by name alone.
+        let pid = match zbus::fdo::DBusProxy::new(&self.conn).await {
+            Ok(dbus) => match zbus::names::BusName::try_from(bus_name.to_string()) {
+                Ok(name) => dbus.get_connection_unix_process_id(name).await.ok(),
+                Err(_) => None,
+            },
+            Err(_) => None,
+        };
+
+        self.attached = Some(Attached { bus_name: bus_name.to_string(), player, pid, watcher });
         self.state.player = Some(Player {
             bus_name: bus_name.to_string(),
             identity,
@@ -265,6 +301,7 @@ impl Engine {
         });
 
         tracing::info!("following {bus_name}");
+        self.refresh_audio();
         self.refresh().await
     }
 
@@ -483,6 +520,47 @@ impl Engine {
         true
     }
 
+    /// Fold a reading from the sound server into state.
+    fn apply_audio(&mut self, snapshot: crate::audio::AudioSnapshot) {
+        use waytify_ipc::VolumeRoute;
+
+        self.state.audio = waytify_ipc::Audio {
+            volume: snapshot.volume,
+            muted: snapshot.muted,
+            // A stream exists only while the player is producing audio locally.
+            // Without one there is nothing here to attenuate, and the Spotify
+            // layer will later claim this for a remote device instead.
+            route: if snapshot.volume.is_some() {
+                VolumeRoute::Local
+            } else {
+                VolumeRoute::Unavailable
+            },
+            sinks: snapshot.sinks,
+            active_sink: snapshot.active_sink,
+        };
+        self.recompute_caps();
+        self.publish();
+    }
+
+    /// How to recognise the current player's audio stream.
+    ///
+    /// Both halves matter. The MPRIS suffix matches the process name for some
+    /// players and not others, and the process id catches the rest, including
+    /// Chrome, whose stream comes from a child process under a different name.
+    fn audio_owner(&self) -> Option<crate::audio::Owner> {
+        let player = self.state.player.as_ref()?;
+        Some(crate::audio::Owner {
+            binary: mpris::short_name(&player.bus_name).to_string(),
+            pid: self.attached.as_ref().and_then(|a| a.pid),
+        })
+    }
+
+    fn refresh_audio(&self) {
+        if let (Some(audio), Some(owner)) = (&self.audio, self.audio_owner()) {
+            audio.send(crate::audio::Request::Refresh { owner });
+        }
+    }
+
     fn recompute_caps(&mut self) {
         let has_track = self.state.track().is_some();
         let has_length = self.state.track().and_then(|t| t.length_ms).is_some();
@@ -541,12 +619,21 @@ impl Engine {
                 root.raise().await?;
             }
 
-            // Landing in later phases. Rejected explicitly so a client gets an
-            // error it can show rather than silence it has to guess about.
-            Command::SetVolume { .. }
-            | Command::VolumeBy { .. }
-            | Command::ToggleMute
-            | Command::SetSink { .. } => anyhow::bail!("volume control arrives in the next phase"),
+            // Volume and output routing, through the sound server. A player with
+            // no local stream reports this as unavailable rather than offering a
+            // control that does nothing.
+            Command::SetVolume { percent } => self.audio_request(|owner| {
+                crate::audio::Request::SetVolume { owner, percent: percent.min(100) }
+            })?,
+            Command::VolumeBy { delta } => {
+                self.audio_request(|owner| crate::audio::Request::ChangeVolume { owner, delta })?
+            }
+            Command::ToggleMute => {
+                self.audio_request(|owner| crate::audio::Request::ToggleMuted { owner })?
+            }
+            Command::SetSink { sink_name } => self.audio_request(|owner| {
+                crate::audio::Request::MoveToSink { owner, sink: sink_name.clone() }
+            })?,
             Command::ToggleLike | Command::TransferTo { .. } => {
                 anyhow::bail!("this needs a connected Spotify account")
             }
@@ -560,6 +647,21 @@ impl Engine {
             | Command::Subscribe { .. }
             | Command::Shutdown => {}
         }
+        Ok(())
+    }
+
+    /// Send an audio request for the current player, or explain why not.
+    fn audio_request(
+        &self,
+        build: impl FnOnce(crate::audio::Owner) -> crate::audio::Request,
+    ) -> Result<()> {
+        let Some(audio) = &self.audio else {
+            anyhow::bail!("no sound server is available");
+        };
+        let Some(owner) = self.audio_owner() else {
+            anyhow::bail!("no player is running");
+        };
+        audio.send(build(owner));
         Ok(())
     }
 
