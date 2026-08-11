@@ -94,10 +94,6 @@ impl Client {
         Ok(())
     }
 
-    pub fn adopt(&mut self, tokens: Tokens) {
-        self.tokens = Some(tokens);
-    }
-
     /// A valid access token, refreshing if the current one is close to expiry.
     async fn access_token(&mut self) -> Result<String> {
         let tokens = self.tokens.as_ref().ok_or_else(|| anyhow!("no Spotify account connected"))?;

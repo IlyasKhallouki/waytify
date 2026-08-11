@@ -452,6 +452,23 @@ mod tests {
     }
 
     #[test]
+    fn remote_control_needs_both_an_account_and_premium() {
+        // The volume route depends on this, and getting it wrong means either a
+        // slider that silently does nothing or one hidden when it would work.
+        let mut spotify = Spotify::default();
+        assert!(!spotify.can_control_remote(), "no account means no remote control");
+
+        spotify.authorized = true;
+        assert!(!spotify.can_control_remote(), "premium is unknown, so do not assume it");
+
+        spotify.premium = Some(false);
+        assert!(!spotify.can_control_remote(), "a free account cannot write to /me/player");
+
+        spotify.premium = Some(true);
+        assert!(spotify.can_control_remote());
+    }
+
+    #[test]
     fn contrast_ratio_matches_wcag_extremes() {
         let black = Rgb { r: 0, g: 0, b: 0 };
         let white = Rgb { r: 255, g: 255, b: 255 };

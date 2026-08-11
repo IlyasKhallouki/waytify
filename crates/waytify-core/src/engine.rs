@@ -683,8 +683,15 @@ impl Engine {
             // A stream exists only while the player is producing audio locally.
             // Without one there is nothing here to attenuate, and the Spotify
             // layer will later claim this for a remote device instead.
+            // A local stream wins: it always works, with no account, network or
+            // Premium. Without one, a Connect device is the only thing left to
+            // attenuate, and only if the account may write to it.
             route: if snapshot.volume.is_some() {
                 VolumeRoute::Local
+            } else if self.state.spotify.active_device.is_some()
+                && self.state.spotify.can_control_remote()
+            {
+                VolumeRoute::Remote
             } else {
                 VolumeRoute::Unavailable
             },
@@ -775,9 +782,26 @@ impl Engine {
             // Volume and output routing, through the sound server. A player with
             // no local stream reports this as unavailable rather than offering a
             // control that does nothing.
-            Command::SetVolume { percent } => self.audio_request(|owner| {
-                crate::audio::Request::SetVolume { owner, percent: percent.min(100) }
-            })?,
+            Command::SetVolume { percent } => {
+                // One slider, two targets. Which one is live depends on where the
+                // audio is actually coming out.
+                if self.state.audio.route == waytify_ipc::VolumeRoute::Remote {
+                    let client = self
+                        .spotify
+                        .clone()
+                        .ok_or_else(|| anyhow::anyhow!("no Spotify account connected"))?;
+                    tokio::spawn(async move {
+                        if let Err(e) = client.lock().await.set_remote_volume(percent).await {
+                            tracing::warn!("could not set the remote volume: {e:#}");
+                        }
+                    });
+                } else {
+                    self.audio_request(|owner| crate::audio::Request::SetVolume {
+                        owner,
+                        percent: percent.min(100),
+                    })?;
+                }
+            }
             Command::VolumeBy { delta } => {
                 self.audio_request(|owner| crate::audio::Request::ChangeVolume { owner, delta })?
             }

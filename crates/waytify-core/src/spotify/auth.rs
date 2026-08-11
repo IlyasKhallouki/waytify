@@ -118,9 +118,6 @@ pub async fn refresh(client_id: &str, refresh_token: &str) -> Result<Tokens> {
 }
 
 /// Run the full login: open a browser, catch the redirect, exchange the code.
-///
-/// Blocking on purpose. This is a one-off interactive command, and the loopback
-/// listener wants a plain socket rather than a runtime.
 pub async fn login(client_id: &str) -> Result<Tokens> {
     let verifier = code_verifier();
     let challenge = code_challenge(&verifier);
@@ -139,7 +136,12 @@ pub async fn login(client_id: &str) -> Result<Tokens> {
     println!("If nothing opens, visit this URL:\n\n{url}\n");
     let _ = open_in_browser(&url);
 
-    let code = wait_for_code(listener, &state)?;
+    // The listener is blocking, so it goes on a blocking thread. Doing it inline
+    // would park the whole runtime for as long as the person takes to decide.
+    let expected = state.clone();
+    let code = tokio::task::spawn_blocking(move || wait_for_code(listener, &expected))
+        .await
+        .context("waiting for the redirect")??;
     let params = [
         ("grant_type", "authorization_code"),
         ("code", code.as_str()),
