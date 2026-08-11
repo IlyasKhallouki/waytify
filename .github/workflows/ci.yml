@@ -51,10 +51,24 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
 
-      - name: Install GTK4 and layer shell
+      - name: Install GTK4
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgtk-4-dev libgtk4-layer-shell-dev
+          sudo apt-get install -y libgtk-4-dev meson ninja-build
+
+      # Ubuntu does not package gtk4-layer-shell, and dropping this job to work
+      # around that would leave the window with no CI at all. Building it takes
+      # about a minute. Pinned to the version developed against rather than
+      # tracking a branch.
+      - name: Build gtk4-layer-shell
+        run: |
+          git clone --depth 1 --branch v1.3.0 \
+            https://github.com/wmww/gtk4-layer-shell /tmp/gtk4-layer-shell
+          cd /tmp/gtk4-layer-shell
+          meson setup -Dexamples=false -Ddocs=false -Dtests=false build
+          ninja -C build
+          sudo ninja -C build install
+          sudo ldconfig
 
       - name: Clippy
         run: cargo clippy --package waytify-popup --all-targets
