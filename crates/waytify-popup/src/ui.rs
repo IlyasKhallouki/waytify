@@ -37,6 +37,7 @@ pub struct Ui {
     play_pause: gtk4::Button,
     shuffle: gtk4::ToggleButton,
     repeat: gtk4::Button,
+    like: gtk4::Button,
     volume_row: gtk4::Box,
     volume: gtk4::Scale,
     mute: gtk4::Button,
@@ -44,7 +45,7 @@ pub struct Ui {
     output_list: gtk4::Box,
     /// Sinks currently listed in the picker, so the list is only rebuilt when the
     /// set of outputs actually changes rather than on every state frame.
-    listed_sinks: std::cell::RefCell<Vec<waytify_ipc::Sink>>,
+    listed_sinks: std::cell::RefCell<(Vec<waytify_ipc::Sink>, Vec<waytify_ipc::Device>)>,
     /// True while the user has hold of the scrubber. Position updates from the
     /// daemon are ignored during that time, so the thumb does not fight the
     /// pointer, and the label follows the thumb instead.
@@ -100,9 +101,15 @@ impl Ui {
         meta.append(&artist);
         meta.append(&album);
 
+        let like = gtk4::Button::from_icon_name("non-starred-symbolic");
+        like.add_css_class("like");
+        like.add_css_class("flat");
+        like.set_valign(gtk4::Align::Center);
+
         header.append(&art);
         header.append(&art_placeholder);
         header.append(&meta);
+        header.append(&like);
 
         // Scrubber row.
         let scrub_row = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
@@ -186,12 +193,13 @@ impl Ui {
             play_pause,
             shuffle,
             repeat,
+            like,
             volume_row,
             volume,
             mute,
             output,
             output_list,
-            listed_sinks: std::cell::RefCell::new(Vec::new()),
+            listed_sinks: std::cell::RefCell::new((Vec::new(), Vec::new())),
             client: Rc::clone(&client),
             dragging: Rc::new(Cell::new(false)),
             length_ms: Rc::new(Cell::new(0)),
@@ -247,6 +255,11 @@ impl Ui {
         {
             let client = Rc::clone(&self.client);
             self.mute.connect_clicked(move |_| client.send(Command::ToggleMute));
+        }
+
+        {
+            let client = Rc::clone(&self.client);
+            self.like.connect_clicked(move |_| client.send(Command::ToggleLike));
         }
 
         // Same settle-then-send shape as the scrubber, for the same reason: a
@@ -380,6 +393,16 @@ impl Ui {
             self.elapsed.set_visible(false);
         }
 
+        // Hidden entirely without an account rather than shown inert: an
+        // unauthorized heart that does nothing is worse than no heart.
+        let liked = state.track().and_then(|t| t.liked);
+        self.like.set_visible(state.caps.can_like);
+        self.like.set_icon_name(if liked == Some(true) {
+            "starred-symbolic"
+        } else {
+            "non-starred-symbolic"
+        });
+
         self.render_audio(state);
 
         self.binding.set(false);
@@ -393,9 +416,12 @@ impl Ui {
     fn render_audio(&self, state: &State) {
         use waytify_ipc::VolumeRoute;
 
+        let has_outputs = !state.audio.sinks.is_empty() || !state.spotify.devices.is_empty();
         let available = state.audio.route != VolumeRoute::Unavailable;
-        self.volume_row.set_visible(available);
-        if !available {
+        self.volume_row.set_visible(available || has_outputs);
+        self.volume.set_visible(available);
+        self.mute.set_visible(available);
+        if !available && !has_outputs {
             return;
         }
 
@@ -413,18 +439,46 @@ impl Ui {
         // Only rebuild when the set of outputs changed. State arrives once a
         // second while playing and rebuilding a list that often would close the
         // popover under the pointer every time.
-        if *self.listed_sinks.borrow() != state.audio.sinks {
+        let outputs_now = (state.audio.sinks.clone(), state.spotify.devices.clone());
+        if *self.listed_sinks.borrow() != outputs_now {
             self.rebuild_outputs(state);
-            *self.listed_sinks.borrow_mut() = state.audio.sinks.clone();
+            *self.listed_sinks.borrow_mut() = outputs_now;
         }
 
-        // Nothing to choose between with a single output.
-        self.output.set_visible(state.audio.sinks.len() > 1);
+        // Nothing to choose between with a single local output and no remote
+        // devices to move to.
+        let choices = state.audio.sinks.len() + state.spotify.devices.len();
+        self.output.set_visible(choices > 1);
     }
 
     fn rebuild_outputs(&self, state: &State) {
         while let Some(child) = self.output_list.first_child() {
             self.output_list.remove(&child);
+        }
+
+        for device in &state.spotify.devices {
+            let row = gtk4::Button::with_label(&format!("{} ({})", device.name, device.kind));
+            row.add_css_class("device");
+            row.add_css_class("remote");
+            row.add_css_class("flat");
+            if Some(&device.id) == state.spotify.active_device.as_ref() {
+                row.add_css_class("active");
+            }
+            // Transferring is a write to /me/player, so it needs Premium. A row
+            // that cannot work is shown disabled rather than hidden, because its
+            // absence would look like the device is not there at all.
+            row.set_sensitive(state.caps.can_transfer);
+
+            let client = Rc::clone(&self.client);
+            let id = device.id.clone();
+            let popover = self.output.popover();
+            row.connect_clicked(move |_| {
+                client.send(Command::TransferTo { device_id: id.clone() });
+                if let Some(popover) = &popover {
+                    popover.popdown();
+                }
+            });
+            self.output_list.append(&row);
         }
 
         for sink in &state.audio.sinks {

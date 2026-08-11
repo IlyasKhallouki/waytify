@@ -29,11 +29,15 @@ gtk4 = { version = "0.11", features = ["v4_12"] }
 gtk4-layer-shell = "0.8"
 # Only the formats album art actually arrives in, to keep build time and binary
 # size off the floor.
+base64 = "0.22"
+keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
 libpulse-binding = "2.30"
+rand = "0.9"
+sha2 = "0.10"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 notify = "8"
 # rustls rather than native-tls so there is no OpenSSL build dependency.
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "http2"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "http2", "json"] }
 clap = { version = "4", features = ["derive", "env"] }
 futures-util = "0.3"
 serde = { version = "1", features = ["derive"] }

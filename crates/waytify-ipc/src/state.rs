@@ -242,6 +242,9 @@ pub struct Spotify {
     /// Full scope only.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub queue: Vec<Track>,
+    /// Id of the device playback is currently on, when Spotify reports one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_device: Option<String>,
 }
 
 impl Spotify {

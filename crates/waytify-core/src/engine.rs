@@ -46,6 +46,17 @@ enum PlayerEvent {
         path: std::path::PathBuf,
         colors: Option<waytify_ipc::ArtColors>,
     },
+    /// Whether a track is in the library. Carries the track it is about, since
+    /// the answer arrives after a round trip and the song may have moved on.
+    Liked {
+        track_id: String,
+        liked: bool,
+    },
+    /// The Spotify Connect device list, and whether the account can control it.
+    Devices {
+        devices: Vec<waytify_ipc::Device>,
+        premium: Option<bool>,
+    },
 }
 
 /// How far the interpolated position may disagree with the player before it is
@@ -67,6 +78,11 @@ pub struct Engine {
     /// than an error. Everything else still works; volume simply is not offered.
     audio: Option<crate::audio::Audio>,
     audio_rx: Option<tokio::sync::mpsc::UnboundedReceiver<crate::audio::AudioSnapshot>>,
+
+    /// `None` until a client id is configured. Shared rather than owned because
+    /// requests happen in spawned tasks: a network round trip must not block the
+    /// loop that is also feeding the bar.
+    spotify: Option<Arc<tokio::sync::Mutex<crate::spotify::Client>>>,
 
     updates: watch::Sender<Arc<State>>,
 }
@@ -102,6 +118,20 @@ impl Engine {
             }
         };
 
+        // Empty client id means the Spotify layer is simply off, which is a
+        // supported configuration rather than a missing one.
+        let spotify = if config.spotify.client_id.trim().is_empty() {
+            None
+        } else {
+            match crate::spotify::Client::new(config.spotify.client_id.clone()) {
+                Ok(client) => Some(Arc::new(tokio::sync::Mutex::new(client))),
+                Err(e) => {
+                    tracing::warn!("could not start the Spotify client: {e:#}");
+                    None
+                }
+            }
+        };
+
         let mut engine = Self {
             conn,
             config,
@@ -113,8 +143,10 @@ impl Engine {
             events_rx,
             audio,
             audio_rx,
+            spotify,
             updates,
         };
+        engine.restore_spotify().await;
         engine.rescan().await?;
         Ok(engine)
     }
@@ -189,6 +221,9 @@ impl Engine {
                     let now = Instant::now();
                     // Nothing announced anything for a while, so both reads are
                     // gap fills rather than second guesses.
+                    if self.attention == Attention::Popup {
+                        self.request_devices();
+                    }
                     let moved = self.refresh_status(now).await | self.refresh_position(now).await;
                     if moved {
                         self.recompute_caps();
@@ -202,7 +237,16 @@ impl Engine {
 
     async fn handle_msg(&mut self, msg: EngineMsg) {
         match msg {
-            EngineMsg::Attention(a) => self.attention = a,
+            EngineMsg::Attention(a) => {
+                let opened = a == Attention::Popup && self.attention != Attention::Popup;
+                self.attention = a;
+                // Only while the window is open. There is no push channel for
+                // the device list, so polling it unseen would spend rate limit
+                // on an answer nobody would look at.
+                if opened {
+                    self.request_devices();
+                }
+            }
             EngineMsg::Command { command, reply } => {
                 let result = self.apply(command).await.map_err(|e| format!("{e:#}"));
                 match reply {
@@ -342,6 +386,7 @@ impl Engine {
         }
         self.recompute_caps();
         self.request_artwork();
+        self.request_liked();
         self.publish();
         Ok(())
     }
@@ -353,6 +398,28 @@ impl Engine {
                 self.publish();
             }
             PlayerEvent::Properties(changed) => self.apply_properties(changed).await,
+            PlayerEvent::Liked { track_id, liked } => {
+                // The song may have changed while the answer was in flight.
+                let current = self.state.track().and_then(crate::metadata::spotify_track_id);
+                if current.as_deref() != Some(track_id.as_str()) {
+                    return;
+                }
+                if let Some(track) = self.state.player.as_mut().and_then(|p| p.track.as_mut()) {
+                    track.liked = Some(liked);
+                }
+                self.recompute_caps();
+                self.publish();
+            }
+            PlayerEvent::Devices { devices, premium } => {
+                self.state.spotify.devices = devices;
+                if let Some(premium) = premium {
+                    self.state.spotify.premium = Some(premium);
+                }
+                self.state.spotify.active_device =
+                    self.state.spotify.devices.iter().find(|d| d.is_active).map(|d| d.id.clone());
+                self.recompute_caps();
+                self.publish();
+            }
             PlayerEvent::Artwork { key, path, colors } => {
                 // A skip during the download means this art belongs to a track
                 // that is no longer showing. Dropping it is correct; the current
@@ -368,6 +435,86 @@ impl Engine {
                 self.publish();
             }
         }
+    }
+
+    /// Adopt a stored refresh token, if there is one.
+    ///
+    /// A failure here means the account is simply not connected. It is logged
+    /// once and never retried in a loop, because a revoked token would otherwise
+    /// generate a request every time anything happened.
+    async fn restore_spotify(&mut self) {
+        let Some(client) = &self.spotify else { return };
+        let token = match crate::spotify::auth::load_refresh_token() {
+            Ok(Some(token)) => token,
+            Ok(None) => return,
+            Err(e) => return tracing::warn!("could not read the stored Spotify token: {e:#}"),
+        };
+
+        let mut guard = client.lock().await;
+        match guard.restore(&token).await {
+            Ok(()) => {
+                self.state.spotify.authorized = true;
+                let premium = guard.check_premium().await.ok();
+                self.state.spotify.premium = premium;
+                tracing::info!("Spotify connected (premium: {premium:?})");
+            }
+            Err(e) => tracing::warn!("stored Spotify token is not usable: {e:#}"),
+        }
+    }
+
+    /// Ask whether the current track is in the library.
+    fn request_liked(&self) {
+        let (Some(client), Some(track)) = (&self.spotify, self.state.track()) else { return };
+        let Some(track_id) = crate::metadata::spotify_track_id(track) else { return };
+
+        let client = Arc::clone(client);
+        let events = self.events_tx.clone();
+        tokio::spawn(async move {
+            let liked = client.lock().await.is_saved(&track_id).await;
+            match liked {
+                Ok(liked) => {
+                    let _ = events.send(PlayerEvent::Liked { track_id, liked }).await;
+                }
+                Err(e) => tracing::debug!("could not read the saved state: {e:#}"),
+            }
+        });
+    }
+
+    /// Refresh the Connect device list.
+    ///
+    /// Only called while the window is open. There is no push channel for this,
+    /// so it has to be polled, and polling it with nothing watching would spend
+    /// rate limit on an answer nobody would see.
+    fn request_devices(&self) {
+        let Some(client) = &self.spotify else { return };
+        let client = Arc::clone(client);
+        let events = self.events_tx.clone();
+
+        tokio::spawn(async move {
+            let mut guard = client.lock().await;
+            let premium = guard.premium();
+            match guard.devices().await {
+                Ok(devices) => {
+                    let devices = devices
+                        .into_iter()
+                        .filter_map(|d| {
+                            // A device with no id cannot be transferred to, so
+                            // listing it would be offering something that fails.
+                            Some(waytify_ipc::Device {
+                                id: d.id?,
+                                name: d.name,
+                                kind: d.kind,
+                                is_active: d.is_active,
+                                supports_volume: d.supports_volume,
+                                volume_percent: d.volume_percent,
+                            })
+                        })
+                        .collect();
+                    let _ = events.send(PlayerEvent::Devices { devices, premium }).await;
+                }
+                Err(e) => tracing::debug!("could not list Connect devices: {e:#}"),
+            }
+        });
     }
 
     /// Fetch artwork for the current track, if it has any and we lack it.
@@ -481,6 +628,7 @@ impl Engine {
             self.refresh_position(now).await;
             self.recompute_caps();
             self.request_artwork();
+            self.request_liked();
             self.publish();
         }
     }
@@ -634,8 +782,48 @@ impl Engine {
             Command::SetSink { sink_name } => self.audio_request(|owner| {
                 crate::audio::Request::MoveToSink { owner, sink: sink_name.clone() }
             })?,
-            Command::ToggleLike | Command::TransferTo { .. } => {
-                anyhow::bail!("this needs a connected Spotify account")
+            Command::ToggleLike => {
+                let client = self
+                    .spotify
+                    .clone()
+                    .ok_or_else(|| anyhow::anyhow!("no Spotify account connected"))?;
+                let track = self.state.track().ok_or_else(|| anyhow::anyhow!("nothing playing"))?;
+                let track_id = crate::metadata::spotify_track_id(track)
+                    .ok_or_else(|| anyhow::anyhow!("this track is not from Spotify"))?;
+                let wanted = !track.liked.unwrap_or(false);
+
+                let events = self.events_tx.clone();
+                tokio::spawn(async move {
+                    let mut guard = client.lock().await;
+                    match guard.set_saved(&track_id, wanted).await {
+                        // Report what was asked for rather than reading it back:
+                        // the library is eventually consistent and an immediate
+                        // re-read often still says the old value.
+                        Ok(()) => {
+                            let _ =
+                                events.send(PlayerEvent::Liked { track_id, liked: wanted }).await;
+                        }
+                        Err(e) => tracing::warn!("could not change the saved state: {e:#}"),
+                    }
+                });
+            }
+            Command::TransferTo { device_id } => {
+                let client = self
+                    .spotify
+                    .clone()
+                    .ok_or_else(|| anyhow::anyhow!("no Spotify account connected"))?;
+                let events = self.events_tx.clone();
+                tokio::spawn(async move {
+                    let mut guard = client.lock().await;
+                    if let Err(e) = guard.transfer_to(&device_id).await {
+                        tracing::warn!("could not transfer playback: {e:#}");
+                    }
+                    let premium = guard.premium();
+                    drop(guard);
+                    // Whatever happened, the device list has probably changed.
+                    let _ =
+                        events.send(PlayerEvent::Devices { devices: Vec::new(), premium }).await;
+                });
             }
 
             // Handled by the daemon before reaching here: window state belongs to

@@ -203,3 +203,33 @@
 .waytify-outputs .device.active {
   color: @waytify_accent;
 }
+
+/* The like button. Hidden entirely without a connected account, so this only
+ * ever applies when it can actually do something. */
+#waytify-popup .like {
+  min-width: 28px;
+  min-height: 28px;
+  border-radius: 50%;
+  color: @waytify_faint;
+  background: none;
+  border: none;
+  box-shadow: none;
+}
+
+#waytify-popup .like:hover {
+  color: @waytify_fg;
+}
+
+#waytify-popup.liked .like {
+  color: @waytify_accent;
+}
+
+/* Spotify Connect devices sit in the same picker as local outputs, since from
+ * the user's side both answer "where is this playing". */
+.waytify-outputs .device.remote {
+  color: @waytify_dim;
+}
+
+.waytify-outputs .device:disabled {
+  opacity: 0.5;
+}

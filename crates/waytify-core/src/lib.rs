@@ -17,6 +17,7 @@ pub mod format;
 pub mod metadata;
 pub mod mock;
 pub mod mpris;
+pub mod spotify;
 
 pub use clock::{Attention, PositionClock};
 pub use config::Config;

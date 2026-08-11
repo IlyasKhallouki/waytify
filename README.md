@@ -8,9 +8,9 @@ Written in Rust. Themed with CSS.
 
 ![The waytify player window](docs/images/popup.png)
 
-> **Status: early.** The bar module, transport, the player window, and volume
-> and output routing work today. Spotify Connect, likes and lyrics are not built
-> yet. See [roadmap](#roadmap) for what exists and what does not.
+> **Status: early but usable.** Everything below works except lyrics. The
+> Spotify layer is optional: without it you still get a full player for any MPRIS
+> source. See [roadmap](#roadmap).
 
 ## Why this exists
 
@@ -231,6 +231,43 @@ stopped = "󰓛"
 
 The defaults are plain Unicode so a fresh install renders on any font.
 
+## Spotify (optional)
+
+Everything so far works with any MPRIS player and needs no account. Connecting
+one adds a like button, the Connect device list, and moving playback between
+devices.
+
+You need your own Spotify application, which takes a couple of minutes. waytify
+deliberately does not ship one: Spotify counts rate limits per application, so a
+shared id would mean a shared budget for every user.
+
+1. Open <https://developer.spotify.com/dashboard> and create an app.
+2. Add a redirect URI of `http://127.0.0.1:8888/callback`. waytify actually asks
+   the operating system for a free port and tells Spotify which one it used, so
+   register a few (8888, 8889, 8890) or use whatever port it prints.
+3. Copy the client id, which is not a secret, into your config:
+
+```toml
+[spotify]
+client_id = "your-client-id"
+```
+
+4. Log in once:
+
+```sh
+waytify login
+```
+
+That opens a browser, catches the redirect on a local port, and stores a refresh
+token in your system keyring rather than in a file. `waytify logout` forgets it.
+
+### What Premium changes
+
+Every write to Spotify's playback endpoints requires Premium. On a free account
+you keep the like button and the device list, and lose transferring playback and
+remote volume. waytify checks once and hides what it cannot do, rather than
+offering a control that fails when clicked.
+
 ## Commands
 
 Useful as Hyprland keybinds or Waybar click actions.
@@ -249,6 +286,10 @@ waytify raise          # bring the player's window forward
 waytify toggle         # open or close the player window
 waytify status         # current state as JSON
 waytify stop           # stop the daemon
+
+waytify like           # save or unsave the current track
+waytify login          # connect a Spotify account
+waytify logout         # forget it again
 
 waytify mock-player    # a fake player for testing, produces no audio
 ```
@@ -293,9 +334,8 @@ Each stage is usable on its own.
       colours exposed to stylesheets.
 - [x] **Volume and output routing.** The player's own volume rather than the
       system's, through PipeWire, with an output device picker.
-- [ ] **Spotify layer.** OAuth via PKCE, likes, queue, Connect devices, and
-      playback transfer. Optional throughout: without it you still have a
-      working player.
+- [x] **Spotify layer.** OAuth via PKCE, likes, Connect devices and playback
+      transfer. Optional throughout: without it you still have a working player.
 - [ ] **Lyrics.** Synced lyrics from lrclib, scrolling with the position clock.
 
 ### On Spotify Premium

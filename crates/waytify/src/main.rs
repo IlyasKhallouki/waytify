@@ -85,6 +85,16 @@ enum Role {
     /// Print a fully commented default config file.
     Config,
 
+    /// Connect a Spotify account, for likes and Connect devices.
+    ///
+    /// Opens a browser once. Needs a client id in the config first; the README
+    /// explains registering one, which takes a couple of minutes.
+    Login,
+    /// Forget the stored Spotify credentials.
+    Logout,
+    /// Save or unsave the current track.
+    Like,
+
     /// Run a fake MPRIS player, for testing without a real one.
     ///
     /// Produces no audio. Useful for trying the window, for reproducing a bug
@@ -154,6 +164,32 @@ async fn dispatch(cli: Cli) -> Result<()> {
             return Ok(());
         }
         Role::MockPlayer => return waytify_core::mock::run_standalone().await,
+
+        Role::Login => {
+            let path = cli.config.clone().unwrap_or_else(paths::config_file);
+            let config = Config::load(&path).context("reading the config file")?;
+            let client_id = config.spotify.client_id.trim();
+            anyhow::ensure!(
+                !client_id.is_empty(),
+                "no Spotify client id configured.\n\n\
+                 Register an application at https://developer.spotify.com/dashboard, \
+                 add http://127.0.0.1:0/callback as a redirect URI (any port; waytify \
+                 picks a free one and tells Spotify which), then put the client id in \
+                 {}:\n\n[spotify]\nclient_id = \"...\"",
+                path.display()
+            );
+
+            let tokens = waytify_core::spotify::auth::login(client_id).await?;
+            waytify_core::spotify::auth::save_refresh_token(&tokens.refresh)?;
+            println!("Spotify connected. Restart the daemon with `waytify stop` to pick it up.");
+            return Ok(());
+        }
+        Role::Logout => {
+            waytify_core::spotify::auth::forget_refresh_token()?;
+            println!("Spotify credentials forgotten.");
+            return Ok(());
+        }
+        Role::Like => Cmd::ToggleLike,
 
         Role::PlayPause => Cmd::PlayPause,
         Role::Play => Cmd::Play,

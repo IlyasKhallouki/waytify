@@ -12,6 +12,22 @@ use std::path::Path;
 pub struct Config {
     pub player: PlayerConfig,
     pub bar: BarConfig,
+    pub spotify: SpotifyConfig,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SpotifyConfig {
+    /// Your own Spotify application's client id.
+    ///
+    /// Not a secret, which is why it lives here rather than in the keyring, but
+    /// still per user: Spotify counts rate limits per application, so everyone
+    /// sharing one id would share one budget. Register your own at
+    /// developer.spotify.com and add
+    /// `http://127.0.0.1:PORT/callback` as a redirect URI.
+    ///
+    /// Empty means the Spotify layer is off, and everything else works as usual.
+    pub client_id: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
