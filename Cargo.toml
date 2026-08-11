@@ -5,7 +5,8 @@ members = ["crates/*"]
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+# gtk4 0.11 requires 1.92, so that is the real floor for a default build.
+rust-version = "1.92"
 license = "MIT"
 authors = ["Ilyas Khallouki <khalloukielias@gmail.com>"]
 repository = "https://github.com/IlyasKhallouki/waytify"

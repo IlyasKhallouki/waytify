@@ -38,7 +38,9 @@ scrubber, transport, and a stylesheet you can edit while it is open.
 
 ## Install
 
-Requires Rust 1.85 or newer.
+Requires Rust 1.92 or newer, which is what the GTK4 bindings need. A build
+without the window (`--no-default-features`) has the same floor today but does
+not depend on GTK at all.
 
 ```sh
 git clone https://github.com/IlyasKhallouki/waytify

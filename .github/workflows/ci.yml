@@ -27,7 +27,7 @@ jobs:
         run: cargo fmt --all --check
 
       - name: Clippy
-        run: cargo clippy --workspace --exclude waytify-popup --all-targets
+        run: cargo clippy -p waytify-ipc -p waytify-core -p waytify-daemon -p waytify-bar --all-targets
 
       # The end-to-end tests serve a mock MPRIS player on a session bus and skip
       # when there is none, so without this they would pass having tested nothing.
@@ -36,7 +36,7 @@ jobs:
 
       - name: Test
         run: |
-          dbus-run-session -- cargo test --workspace --exclude waytify-popup
+          dbus-run-session -- cargo test -p waytify-ipc -p waytify-core -p waytify-daemon -p waytify-bar
 
       - name: Build without the window
         run: cargo build --package waytify --no-default-features
@@ -66,7 +66,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.85.0
+      - uses: dtolnay/rust-toolchain@1.92.0
       - uses: Swatinem/rust-cache@v2
       - name: Build the core on the minimum supported Rust version
-        run: cargo build --workspace --exclude waytify-popup
+        run: cargo build -p waytify-ipc -p waytify-core -p waytify-daemon -p waytify-bar
