@@ -26,16 +26,16 @@ jobs:
       - name: Format
         run: cargo fmt --all --check
 
-      - name: Clippy
-        run: cargo clippy -p waytify-ipc -p waytify-core -p waytify-daemon -p waytify-bar --all-targets
-
-      # The end-to-end tests serve a mock MPRIS player on a session bus and skip
-      # when there is none, so without this they would pass having tested nothing.
       # dbus so the end-to-end tests have a session bus to serve the mock player
       # on, and libpulse because volume control links against it.
       - name: Install system libraries
         run: sudo apt-get update && sudo apt-get install -y dbus libdbus-1-dev libpulse-dev
 
+      - name: Clippy
+        run: cargo clippy -p waytify-ipc -p waytify-core -p waytify-daemon -p waytify-bar --all-targets
+
+      # The end-to-end tests serve a mock MPRIS player on a session bus and skip
+      # when there is none, so without this they would pass having tested nothing.
       - name: Test
         run: |
           dbus-run-session -- cargo test -p waytify-ipc -p waytify-core -p waytify-daemon -p waytify-bar
