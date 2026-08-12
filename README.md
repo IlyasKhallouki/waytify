@@ -230,6 +230,24 @@ stopped = "⏹"
 enabled = true
 ```
 
+### What it writes to disk
+
+```
+~/.config/waytify/config.toml    settings, entirely optional
+~/.config/waytify/style.css      your stylesheet, watched for changes
+~/.cache/waytify/art/            album covers, downscaled to 256px
+~/.cache/waytify/lyrics/         lyrics, including which tracks have none
+```
+
+Nothing under `~/.cache` is needed to run, and deleting it is safe at any time.
+It grows with the number of distinct tracks you play and is measured in tens of
+megabytes rather than gigabytes, since covers are stored as thumbnails rather
+than originals.
+
+Your Spotify refresh token is not in any of these. It goes to the system keyring
+through the Secret Service API, which is what GNOME Keyring and KWallet
+implement.
+
 ### Template syntax
 
 `{name}` inserts a value. Available names are `icon`, `status`, `title`,
