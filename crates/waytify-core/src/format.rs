@@ -201,6 +201,20 @@ pub fn vars_from_state(state: &State, icons: &Icons) -> Vars {
 /// Render the complete Waybar payload for a state.
 pub fn render_bar(state: &State, cfg: &BarConfig) -> BarOutput {
     let status = state.status();
+
+    // Empty text collapses the module in Waybar, so hiding is rendering nothing
+    // rather than a protocol of its own. The classes still go out, so a
+    // stylesheet can react to the state even while there is no text.
+    if !cfg.shows(state) {
+        return BarOutput {
+            text: String::new(),
+            alt: status.css_class().to_string(),
+            tooltip: String::new(),
+            class: state.css_classes(),
+            percentage: 0,
+        };
+    }
+
     let vars = vars_from_state(state, &cfg.icons);
 
     let text = render(cfg.template(status), &vars);
@@ -224,6 +238,49 @@ mod tests {
 
     fn vars(pairs: &[(&'static str, &str)]) -> Vars {
         pairs.iter().map(|(k, v)| (*k, v.to_string())).collect()
+    }
+
+    fn playing(status: Status) -> State {
+        State {
+            player: Some(Player {
+                bus_name: "org.mpris.MediaPlayer2.spotify".into(),
+                identity: "Spotify".into(),
+                status,
+                track: Some(Track { title: "Something".into(), ..Default::default() }),
+                position_ms: 0,
+                shuffle: None,
+                repeat: None,
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn the_module_can_be_told_when_to_appear() {
+        use crate::config::ShowWhen;
+        let cfg = |show| BarConfig { show, ..BarConfig::default() };
+
+        // Waybar collapses a module with no text, so hiding is empty output.
+        let hidden = render_bar(&playing(Status::Paused), &cfg(ShowWhen::Playing));
+        assert!(hidden.text.is_empty());
+        assert!(hidden.tooltip.is_empty(), "a tooltip on an invisible module is a stray box");
+        assert!(!hidden.class.is_empty(), "the classes still go out so a theme can react");
+
+        assert!(!render_bar(&playing(Status::Playing), &cfg(ShowWhen::Playing)).text.is_empty());
+
+        // Running shows a paused player, which is the default: the module is
+        // where you press play.
+        assert!(!render_bar(&playing(Status::Paused), &cfg(ShowWhen::Running)).text.is_empty());
+        assert!(render_bar(&State::default(), &cfg(ShowWhen::Running)).text.is_empty());
+
+        // Always renders the stopped template even with nothing running, which
+        // is empty by default, so this is about letting a theme override it.
+        let cfg = BarConfig {
+            show: ShowWhen::Always,
+            format_stopped: Some("nothing playing".into()),
+            ..BarConfig::default()
+        };
+        assert_eq!(render_bar(&State::default(), &cfg).text, "nothing playing");
     }
 
     #[test]

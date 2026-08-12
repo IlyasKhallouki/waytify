@@ -1,0 +1,393 @@
+/* waytify: Burning Cherry
+ *
+ * Built for Rosé Pine with the burning_cherry wallpaper, using the plum and
+ * pink HyDE derived from it.
+ *
+ * The accents are not fixed. waytify pulls two colours out of every album cover
+ * and publishes them as @art_vibrant and @art_muted, so the border, the
+ * scrubber, the play button and the line being sung all take their colour from
+ * whatever is on screen. The plum below is the ground it all sits on.
+ *
+ *   base   #312830   plum black, from dcol_pry1
+ *   pink   #F0AAE8   dcol_1xa8
+ *   rose   #E69AAA   dcol_2xa7
+ *   coral  #D7816A   dcol_pry4
+ *   iris   #C4A7E7   Rosé Pine
+ */
+
+@define-color base       #312830;
+@define-color base_deep  #241C23;
+@define-color pink       #F0AAE8;
+@define-color pink_soft  #E69ADD;
+@define-color rose       #E69AAA;
+@define-color coral      #D7816A;
+@define-color iris       #C4A7E7;
+@define-color ink        #FFFFFF;
+
+/* ---------------------------------------------------------------- the panel */
+
+#waytify-popup {
+  /* Two stops rather than a flat fill, tinted by the cover, so the panel
+   * belongs to the track rather than sitting under it. */
+  background-image: linear-gradient(
+    160deg,
+    alpha(mix(@base, @art_muted, 0.38), 0.97) 0%,
+    alpha(@base_deep, 0.98) 62%,
+    alpha(mix(@base_deep, @art_vibrant, 0.14), 0.98) 100%
+  );
+  border: 1px solid alpha(@art_vibrant, 0.42);
+  border-radius: 18px;
+  padding: 18px;
+  margin: 6px;
+  color: @ink;
+  font-family: "Rubik", "Inter", sans-serif;
+  font-size: 14px;
+  min-width: 340px;
+
+  /* A wide, low-opacity throw reads as depth under a blurred surface. The
+   * inner line is what gives the edge its sheen. */
+  box-shadow:
+    0 18px 48px alpha(#000000, 0.55),
+    0 0 42px alpha(@art_vibrant, 0.16),
+    inset 0 1px 0 alpha(@ink, 0.07);
+}
+
+/* Dimmed while the daemon is away, so stale never looks live. */
+#waytify-popup.offline {
+  opacity: 0.55;
+}
+
+#waytify-dismiss .waytify-backdrop {
+  background-color: alpha(#000000, 0.18);
+}
+
+/* ---------------------------------------------------------------- the track */
+
+.waytify-header {
+  margin-bottom: 4px;
+}
+
+.waytify-art {
+  border-radius: 12px;
+  min-width: 76px;
+  min-height: 76px;
+  margin-right: 14px;
+  box-shadow:
+    0 8px 22px alpha(#000000, 0.5),
+    0 0 24px alpha(@art_vibrant, 0.35);
+}
+
+/* Stands in when a track has no cover. Kept as a lit shape rather than a hole. */
+.waytify-art.art-missing {
+  background-image: linear-gradient(135deg, @art_muted 0%, @art_vibrant 100%);
+  opacity: 0.5;
+}
+
+.track-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: @ink;
+  text-shadow: 0 1px 6px alpha(#000000, 0.6);
+}
+
+.track-artist {
+  font-size: 13px;
+  font-weight: 500;
+  color: mix(@pink, @art_vibrant, 0.45);
+}
+
+.track-album {
+  font-size: 12px;
+  color: alpha(@ink, 0.42);
+}
+
+.like {
+  color: alpha(@ink, 0.35);
+  background: none;
+  border: none;
+  padding: 4px;
+  transition: color 220ms ease, text-shadow 220ms ease;
+}
+
+.like:hover {
+  color: @rose;
+}
+
+#waytify-popup.liked .like {
+  color: @coral;
+  text-shadow: 0 0 14px alpha(@coral, 0.8);
+}
+
+/* ------------------------------------------------------------- the scrubber */
+
+.waytify-scrubber {
+  margin: 2px 0 6px 0;
+}
+
+.elapsed,
+.duration {
+  font-size: 11px;
+  font-feature-settings: "tnum";
+  color: alpha(@ink, 0.5);
+  min-width: 38px;
+}
+
+.scrubber trough {
+  background-color: alpha(@ink, 0.1);
+  border-radius: 99px;
+  min-height: 5px;
+  margin: 0 10px;
+}
+
+.scrubber highlight {
+  /* The played portion carries the cover's colour into the pink. */
+  background-image: linear-gradient(to right, @art_vibrant 0%, @pink 100%);
+  border-radius: 99px;
+  box-shadow: 0 0 12px alpha(@art_vibrant, 0.65);
+}
+
+.scrubber slider {
+  background-color: @ink;
+  border-radius: 99px;
+  min-width: 13px;
+  min-height: 13px;
+  margin: -5px;
+  box-shadow:
+    0 0 0 3px alpha(@art_vibrant, 0.28),
+    0 2px 8px alpha(#000000, 0.6);
+  transition: box-shadow 180ms ease;
+}
+
+.scrubber:hover slider {
+  box-shadow:
+    0 0 0 5px alpha(@art_vibrant, 0.4),
+    0 2px 10px alpha(#000000, 0.7);
+}
+
+/* ------------------------------------------------------------------ volume */
+
+.waytify-volume {
+  margin: 2px 0;
+}
+
+.mute,
+.output {
+  color: alpha(@ink, 0.55);
+  background: none;
+  border: none;
+  padding: 4px 6px;
+  transition: color 200ms ease;
+}
+
+.mute:hover,
+.output:hover {
+  color: @pink;
+}
+
+.mute.muted {
+  color: @coral;
+}
+
+.volume-slider trough {
+  background-color: alpha(@ink, 0.1);
+  border-radius: 99px;
+  min-height: 4px;
+  margin: 0 8px;
+}
+
+.volume-slider highlight {
+  background-image: linear-gradient(to right, alpha(@rose, 0.85) 0%, @pink 100%);
+  border-radius: 99px;
+}
+
+.volume-slider slider {
+  background-color: @ink;
+  border-radius: 99px;
+  min-width: 11px;
+  min-height: 11px;
+  margin: -4px;
+  box-shadow: 0 1px 5px alpha(#000000, 0.6);
+}
+
+/* --------------------------------------------------------------- transport */
+
+.waytify-transport {
+  margin: 8px 0 4px 0;
+}
+
+.waytify-transport button {
+  background: none;
+  border: none;
+  border-radius: 99px;
+  color: alpha(@ink, 0.75);
+  min-width: 34px;
+  min-height: 34px;
+  margin: 0 3px;
+  transition: background-color 200ms ease, color 200ms ease;
+}
+
+.waytify-transport button:hover {
+  background-color: alpha(@ink, 0.09);
+  color: @ink;
+}
+
+.waytify-transport button:disabled {
+  color: alpha(@ink, 0.2);
+}
+
+/* The one control the window exists for, so it is the one thing that glows. */
+.waytify-transport .playpause {
+  background-image: linear-gradient(135deg, @art_vibrant 0%, @pink 100%);
+  color: @art_on_vibrant;
+  min-width: 46px;
+  min-height: 46px;
+  margin: 0 8px;
+  box-shadow:
+    0 4px 16px alpha(@art_vibrant, 0.55),
+    inset 0 1px 0 alpha(@ink, 0.28);
+}
+
+.waytify-transport .playpause:hover {
+  box-shadow:
+    0 6px 22px alpha(@art_vibrant, 0.75),
+    inset 0 1px 0 alpha(@ink, 0.35);
+}
+
+.waytify-transport .shuffle:checked,
+.waytify-transport .repeat.on {
+  color: @pink;
+  text-shadow: 0 0 12px alpha(@pink, 0.9);
+}
+
+/* Paused takes the light out of it without moving anything. */
+#waytify-popup.paused .waytify-transport .playpause {
+  box-shadow: 0 2px 10px alpha(#000000, 0.45);
+  opacity: 0.85;
+}
+
+/* ------------------------------------------------------------------ lyrics */
+
+.waytify-lyrics {
+  margin: 10px 0 4px 0;
+  padding: 8px 0;
+  border-top: 1px solid alpha(@ink, 0.07);
+  border-bottom: 1px solid alpha(@ink, 0.07);
+}
+
+.waytify-lyrics .lyric-line {
+  font-size: 13px;
+  color: alpha(@ink, 0.28);
+  transition: color 320ms ease, text-shadow 320ms ease;
+}
+
+.waytify-lyrics .lyric-line.current {
+  font-size: 15px;
+  font-weight: 700;
+  color: @ink;
+  text-shadow:
+    0 0 18px alpha(@art_vibrant, 0.85),
+    0 0 34px alpha(@pink, 0.35);
+}
+
+/* ----------------------------------------------------------------- up next */
+
+.waytify-queue {
+  margin-top: 8px;
+}
+
+.waytify-queue > label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: alpha(@pink, 0.7);
+}
+
+.waytify-queue:hover > label {
+  color: @pink;
+}
+
+.waytify-queue .queue-track {
+  padding: 3px 0;
+}
+
+.waytify-queue .queue-title {
+  font-size: 12px;
+  color: alpha(@ink, 0.8);
+}
+
+.waytify-queue .queue-artist {
+  font-size: 11px;
+  color: alpha(@ink, 0.38);
+}
+
+/* ----------------------------------------------------------------- devices */
+
+.waytify-outputs {
+  background-image: linear-gradient(160deg, alpha(@base, 0.98) 0%, alpha(@base_deep, 0.99) 100%);
+  border: 1px solid alpha(@pink, 0.22);
+  border-radius: 14px;
+  padding: 8px;
+  box-shadow: 0 12px 32px alpha(#000000, 0.55);
+}
+
+.waytify-outputs .outputs-heading {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: alpha(@pink, 0.7);
+}
+
+.waytify-outputs .device {
+  background: none;
+  border: none;
+  border-radius: 9px;
+  padding: 7px 10px;
+  color: alpha(@ink, 0.85);
+  transition: background-color 180ms ease;
+}
+
+.waytify-outputs .device:hover {
+  background-color: alpha(@pink, 0.14);
+}
+
+.waytify-outputs .device.active {
+  background-image: linear-gradient(
+    to right,
+    alpha(@art_vibrant, 0.3) 0%,
+    alpha(@pink, 0.12) 100%
+  );
+  color: @ink;
+}
+
+.waytify-outputs .device.active .device-name {
+  font-weight: 700;
+}
+
+.waytify-outputs .device-kind {
+  font-size: 11px;
+  color: alpha(@ink, 0.4);
+}
+
+.waytify-outputs .device:disabled {
+  color: alpha(@ink, 0.3);
+}
+
+.waytify-outputs .outputs-hint {
+  font-size: 11px;
+  color: alpha(@ink, 0.35);
+}
+
+.waytify-outputs .outputs-refresh {
+  background-color: alpha(@ink, 0.06);
+  border: none;
+  border-radius: 9px;
+  padding: 6px;
+  margin-top: 4px;
+  color: alpha(@ink, 0.7);
+  font-size: 12px;
+}
+
+.waytify-outputs .outputs-refresh:hover {
+  background-color: alpha(@pink, 0.18);
+  color: @ink;
+}

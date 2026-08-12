@@ -20,6 +20,12 @@ use waytify_ipc::{ArtColors, paths};
 /// Baked-in defaults.
 const DEFAULT_CSS: &str = include_str!("default.css");
 
+/// The baked stylesheet, for tests that check it still parses.
+#[cfg(test)]
+pub(crate) fn default_css() -> &'static str {
+    DEFAULT_CSS
+}
+
 const PRIORITY_DEFAULT: u32 = gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION;
 /// Above the defaults so art colours can replace them, below the user stylesheet
 /// so the user always wins.

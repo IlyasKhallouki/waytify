@@ -155,10 +155,24 @@ pub struct Candidate {
 /// decides, so a paused Spotify still beats a paused Firefox tab when Spotify is
 /// listed first. Ties break on name so the choice is stable across restarts
 /// rather than following hash order.
-pub fn select<'a>(candidates: &'a [Candidate], preferred: &[String]) -> Option<&'a Candidate> {
-    candidates.iter().max_by(|a, b| {
+///
+/// `only`, when it is not empty, removes everything unlisted from consideration
+/// first. That is a different statement from preference: preference decides who
+/// wins, this decides who is playing at all.
+pub fn select<'a>(
+    candidates: &'a [Candidate],
+    preferred: &[String],
+    only: &[String],
+) -> Option<&'a Candidate> {
+    candidates.iter().filter(|c| only.is_empty() || names_match(c, only)).max_by(|a, b| {
         rank(a, preferred).cmp(&rank(b, preferred)).then_with(|| b.bus_name.cmp(&a.bus_name))
     })
+}
+
+/// Whether a player is named in a list, by short name or by full bus name.
+fn names_match(c: &Candidate, names: &[String]) -> bool {
+    let short = short_name(&c.bus_name);
+    names.iter().any(|n| n.eq_ignore_ascii_case(short) || n.eq_ignore_ascii_case(&c.bus_name))
 }
 
 fn rank(c: &Candidate, preferred: &[String]) -> (u8, usize) {
@@ -208,21 +222,45 @@ mod tests {
 
     #[test]
     fn nothing_playing_means_no_selection() {
-        assert!(select(&[], &[]).is_none());
+        assert!(select(&[], &[], &[]).is_none());
     }
 
     #[test]
     fn a_playing_player_beats_a_paused_one() {
         let list = [c("spotify", Status::Paused), c("mpv", Status::Playing)];
         // No preference configured, so what is audible wins.
-        assert_eq!(select(&list, &[]).unwrap().bus_name, "org.mpris.MediaPlayer2.mpv");
+        assert_eq!(select(&list, &[], &[]).unwrap().bus_name, "org.mpris.MediaPlayer2.mpv");
     }
 
     #[test]
     fn preference_decides_between_two_idle_players() {
         let list = [c("firefox", Status::Paused), c("spotify", Status::Paused)];
         let pref = vec!["spotify".to_string()];
-        assert_eq!(select(&list, &pref).unwrap().bus_name, "org.mpris.MediaPlayer2.spotify");
+        assert_eq!(select(&list, &pref, &[]).unwrap().bus_name, "org.mpris.MediaPlayer2.spotify");
+    }
+
+    #[test]
+    fn only_hides_everything_it_does_not_name() {
+        let candidates =
+            [c("spotify", Status::Paused), c("firefox.instance_1_15", Status::Playing)];
+        let only = ["spotify".to_string()];
+
+        // Without it, a playing video wins over a paused Spotify, which is the
+        // right answer for a media widget and the wrong one for someone who
+        // asked for Spotify.
+        let any = select(&candidates, &[], &[]).unwrap();
+        assert!(any.bus_name.contains("firefox"));
+
+        let picked = select(&candidates, &[], &only).unwrap();
+        assert!(picked.bus_name.ends_with("spotify"), "paused Spotify beats a video it excludes");
+
+        // Nothing listed running means nothing at all, rather than falling back
+        // to whatever else happens to be there.
+        assert!(select(&[c("firefox.instance_1_15", Status::Playing)], &[], &only).is_none());
+
+        // A full bus name works as well as a short one.
+        let full = ["org.mpris.MediaPlayer2.spotify".to_string()];
+        assert!(select(&candidates, &[], &full).is_some());
     }
 
     #[test]
@@ -231,24 +269,24 @@ mod tests {
         // paused one would mean the bar disagrees with the speakers.
         let list = [c("spotify", Status::Paused), c("mpv", Status::Playing)];
         let pref = vec!["spotify".to_string()];
-        assert_eq!(select(&list, &pref).unwrap().bus_name, "org.mpris.MediaPlayer2.mpv");
+        assert_eq!(select(&list, &pref, &[]).unwrap().bus_name, "org.mpris.MediaPlayer2.mpv");
     }
 
     #[test]
     fn preference_order_is_respected_among_equals() {
         let list = [c("mpv", Status::Playing), c("spotify", Status::Playing)];
         let pref = vec!["spotify".to_string(), "mpv".to_string()];
-        assert_eq!(select(&list, &pref).unwrap().bus_name, "org.mpris.MediaPlayer2.spotify");
+        assert_eq!(select(&list, &pref, &[]).unwrap().bus_name, "org.mpris.MediaPlayer2.spotify");
 
         let pref = vec!["mpv".to_string(), "spotify".to_string()];
-        assert_eq!(select(&list, &pref).unwrap().bus_name, "org.mpris.MediaPlayer2.mpv");
+        assert_eq!(select(&list, &pref, &[]).unwrap().bus_name, "org.mpris.MediaPlayer2.mpv");
     }
 
     #[test]
     fn preference_matches_a_full_bus_name_too() {
         let list = [c("firefox", Status::Paused), c("spotify", Status::Paused)];
         let pref = vec!["org.mpris.MediaPlayer2.firefox".to_string()];
-        assert_eq!(select(&list, &pref).unwrap().bus_name, "org.mpris.MediaPlayer2.firefox");
+        assert_eq!(select(&list, &pref, &[]).unwrap().bus_name, "org.mpris.MediaPlayer2.firefox");
     }
 
     #[test]
@@ -256,7 +294,7 @@ mod tests {
         // Hash order would make the bar flip between players across restarts.
         let list = [c("mpv", Status::Paused), c("spotify", Status::Paused)];
         let reversed = [c("spotify", Status::Paused), c("mpv", Status::Paused)];
-        assert_eq!(select(&list, &[]).unwrap(), select(&reversed, &[]).unwrap());
+        assert_eq!(select(&list, &[], &[]).unwrap(), select(&reversed, &[], &[]).unwrap());
     }
 
     #[test]

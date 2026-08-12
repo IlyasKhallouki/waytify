@@ -907,6 +907,8 @@ mod tests {
         ui.render(&state);
         assert!(!ui.queue.is_visible(), "the section goes away with its contents");
 
+        check_stylesheets();
+        check_art_colors_cross_providers(&ui);
         check_lyrics(&ui, &mut state);
         check_the_position_carries_forward(&ui, &mut state);
     }
@@ -948,6 +950,75 @@ mod tests {
         // daemon in between.
         ui.highlight_line(20_500);
         assert_eq!(shown(ui)[1], "Second");
+    }
+
+    /// GTK reports CSS problems through a signal and then carries on with
+    /// whatever it managed to parse, so a broken stylesheet shows up as a window
+    /// that looks subtly wrong rather than as an error. This turns that into a
+    /// failure.
+    ///
+    /// Set `WAYTIFY_CSS_CHECK` to a path to check your own stylesheet too:
+    ///
+    /// ```sh
+    /// WAYTIFY_CSS_CHECK=~/.config/waytify/style.css cargo test -p waytify-popup
+    /// ```
+    fn check_stylesheets() {
+        let mut sheets = vec![("default.css".to_string(), crate::style::default_css().to_string())];
+        if let Ok(path) = std::env::var("WAYTIFY_CSS_CHECK") {
+            let css = std::fs::read_to_string(&path).expect("reading WAYTIFY_CSS_CHECK");
+            sheets.push((path, css));
+        }
+
+        for (name, css) in sheets {
+            let provider = gtk4::CssProvider::new();
+            let problems = Rc::new(std::cell::RefCell::new(Vec::new()));
+            let seen = Rc::clone(&problems);
+            provider.connect_parsing_error(move |_, section, error| {
+                seen.borrow_mut().push(format!("{}: {error}", section.to_str()));
+            });
+            provider.load_from_string(&css);
+            let problems = problems.borrow();
+            assert!(problems.is_empty(), "{name} does not parse:\n  {}", problems.join("\n  "));
+        }
+    }
+
+    /// The whole art-colour feature rests on one assumption about GTK: that a
+    /// colour defined by one provider can be used by a rule in another. waytify
+    /// publishes `@art_vibrant` from its own provider so a user stylesheet can
+    /// refer to it, and the two are necessarily different providers because one
+    /// is rewritten on every track and the other is a file on disk.
+    ///
+    /// Nothing else would notice if that stopped working. A named colour that
+    /// cannot be resolved is not a parse error, so the rule would quietly fall
+    /// back and every art-aware theme would go flat.
+    fn check_art_colors_cross_providers(ui: &Ui) {
+        let display = gtk4::prelude::WidgetExt::display(&ui.root);
+
+        let defines = gtk4::CssProvider::new();
+        defines.load_from_string("@define-color probe_colour rgb(255,0,0);");
+        gtk4::style_context_add_provider_for_display(
+            &display,
+            &defines,
+            gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
+        );
+
+        let uses = gtk4::CssProvider::new();
+        uses.load_from_string("#waytify-popup .track-artist { color: @probe_colour; }");
+        gtk4::style_context_add_provider_for_display(
+            &display,
+            &uses,
+            gtk4::STYLE_PROVIDER_PRIORITY_USER,
+        );
+
+        let colour = gtk4::prelude::WidgetExt::color(&ui.artist);
+        assert_eq!(
+            (colour.red(), colour.green(), colour.blue()),
+            (1.0, 0.0, 0.0),
+            "a colour defined in one provider must reach a rule in another"
+        );
+
+        gtk4::style_context_remove_provider_for_display(&display, &uses);
+        gtk4::style_context_remove_provider_for_display(&display, &defines);
     }
 
     fn check_lyrics(ui: &Ui, state: &mut State) {

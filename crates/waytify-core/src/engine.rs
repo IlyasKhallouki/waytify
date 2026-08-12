@@ -295,7 +295,8 @@ impl Engine {
         }
 
         let chosen =
-            mpris::select(&candidates, &self.config.player.preferred).map(|c| c.bus_name.clone());
+            mpris::select(&candidates, &self.config.player.preferred, &self.config.player.only)
+                .map(|c| c.bus_name.clone());
 
         match chosen {
             Some(bus) => {

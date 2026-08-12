@@ -172,6 +172,11 @@ Starting GTK takes long enough that opening it fresh on every click feels broken
 
 ## Styling
 
+There is a worked example in [`contrib/themes/burning-cherry.css`](contrib/themes/burning-cherry.css),
+written against a Rosé Pine desktop. It takes its accents from `@art_vibrant`
+and `@art_muted`, so the border, the scrubber, the play button and the line
+being sung all change colour with the album cover.
+
 The bar module and the window are styled in two different places, and both are
 documented in full in [`docs/THEMING.md`](docs/THEMING.md).
 
@@ -216,6 +221,20 @@ waytify config > ~/.config/waytify/config.toml
 # Preference only breaks ties between players in the same state: whatever is
 # actually playing always wins, so the bar cannot disagree with your speakers.
 preferred = ["spotify"]
+
+# Follow these and nothing else. Empty, the default, follows whatever is
+# running, which is what makes this a media widget rather than a Spotify one.
+# Listing anything makes the rest invisible, so a video in a browser tab cannot
+# take the bar over just by being the thing making noise.
+only = []
+
+[bar]
+# When the module appears at all.
+#   "running"  whenever a player is running, playing or paused. The default.
+#   "playing"  only while something is actually playing. Note that pausing then
+#              hides the module, so resume from the window or a keybind.
+#   "always"   even with nothing running, which renders format_stopped.
+show = "running"
 
 [bar]
 format = "{icon}  {title}[ · {artist}]"

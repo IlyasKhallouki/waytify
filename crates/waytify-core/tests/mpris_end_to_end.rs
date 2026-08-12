@@ -43,7 +43,10 @@ where
 }
 
 fn following_the_mock() -> Config {
-    Config { player: PlayerConfig { preferred: vec![mock::SUFFIX.into()] }, ..Default::default() }
+    Config {
+        player: PlayerConfig { preferred: vec![mock::SUFFIX.into()], ..Default::default() },
+        ..Default::default()
+    }
 }
 
 #[tokio::test]
@@ -183,7 +186,10 @@ async fn engine_reports_no_player_when_none_is_running() {
     // Preferring a name nothing will ever claim is the only reliable way to test
     // the empty case on a developer machine that may have music playing.
     let config = Config {
-        player: PlayerConfig { preferred: vec!["definitely-not-a-real-player".into()] },
+        player: PlayerConfig {
+            preferred: vec!["definitely-not-a-real-player".into()],
+            ..Default::default()
+        },
         ..Default::default()
     };
     let engine = Engine::new(config).await.expect("engine should start with no player");

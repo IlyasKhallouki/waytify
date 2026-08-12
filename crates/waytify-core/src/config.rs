@@ -70,11 +70,24 @@ pub struct PlayerConfig {
     /// decides between players in the same playback state: something actually
     /// playing always wins, so the bar never disagrees with the speakers.
     pub preferred: Vec<String>,
+
+    /// Players to follow, to the exclusion of everything else.
+    ///
+    /// Empty, the default, means follow whatever is running, which is what makes
+    /// waytify a media widget rather than a Spotify widget. Listing anything
+    /// here makes the rest invisible: a browser tab playing a video will not
+    /// take the bar over, and with nothing listed running the bar is empty
+    /// rather than showing something else.
+    ///
+    /// This is a stronger statement than `preferred`, which only breaks ties.
+    pub only: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct BarConfig {
+    /// When the module shows anything at all.
+    pub show: ShowWhen,
     /// Template used while playing. See [`crate::format`] for the syntax.
     pub format: String,
     /// Template used while paused. Falls back to `format` when unset.
@@ -88,6 +101,7 @@ pub struct BarConfig {
 impl Default for BarConfig {
     fn default() -> Self {
         Self {
+            show: ShowWhen::default(),
             // The bracketed group disappears when there is no artist, which is
             // common for podcasts and local files.
             format: "{icon}  {title}[ · {artist}]".into(),
@@ -99,7 +113,36 @@ impl Default for BarConfig {
     }
 }
 
+/// When the bar module renders anything.
+///
+/// Waybar collapses a module whose text is empty, so this is expressed by
+/// rendering nothing rather than by any special protocol.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShowWhen {
+    /// Whenever a player is running, playing or paused. The default.
+    #[default]
+    Running,
+    /// Only while something is actually playing.
+    ///
+    /// Worth knowing before choosing it: pausing from the bar makes the module
+    /// disappear, so resuming means going to the player or to a keybind. That is
+    /// the trade for the bar being empty when you are not listening to anything.
+    Playing,
+    /// Even with no player running, which renders the stopped template.
+    Always,
+}
+
 impl BarConfig {
+    /// Whether to render at all in this state.
+    pub fn shows(&self, state: &waytify_ipc::State) -> bool {
+        match self.show {
+            ShowWhen::Always => true,
+            ShowWhen::Running => state.player.is_some(),
+            ShowWhen::Playing => state.status() == waytify_ipc::Status::Playing,
+        }
+    }
+
     /// The template for a given playback state, after fallbacks.
     pub fn template(&self, status: waytify_ipc::Status) -> &str {
         use waytify_ipc::Status;
