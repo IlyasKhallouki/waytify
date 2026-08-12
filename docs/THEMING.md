@@ -56,10 +56,11 @@ anything, and the window does not even need to be closed.
     ├── .waytify-header
     │   ├── .waytify-art            cover image
     │   │   └── .art-missing        stands in when there is no cover
-    │   └── .waytify-meta
-    │       ├── .track-title
-    │       ├── .track-artist
-    │       └── .track-album
+    │   ├── .waytify-meta
+    │   │   ├── .track-title
+    │   │   ├── .track-artist
+    │   │   └── .track-album
+    │   └── .like                   hidden unless the track is savable
     ├── .waytify-scrubber
     │   ├── .elapsed
     │   ├── .scrubber               a GtkScale: trough, highlight, slider
@@ -68,12 +69,17 @@ anything, and the window does not even need to be closed.
     │   ├── .mute                   gains .muted when muted
     │   ├── .volume-slider          a GtkScale
     │   └── .output                 device picker, hidden with only one output
-    └── .waytify-transport
-        ├── .shuffle                a GtkToggleButton, so :checked applies
-        ├── .prev
-        ├── .playpause
-        ├── .next
-        └── .repeat
+    ├── .waytify-transport
+    │   ├── .shuffle                a GtkToggleButton, so :checked applies
+    │   ├── .prev
+    │   ├── .playpause
+    │   ├── .next
+    │   └── .repeat
+    └── .waytify-queue              hidden unless Spotify has an up-next list
+        ├── .queue-heading
+        └── .queue-track            one upcoming track, at most five
+            ├── .queue-title
+            └── .queue-artist
 
 #waytify-dismiss                    full-screen click catcher, transparent
 └── .waytify-backdrop               style this for a dimmed backdrop
@@ -81,6 +87,12 @@ anything, and the window does not even need to be closed.
 .waytify-outputs                    the output picker popover
 └── .device                         one output, gains .active for the current one
 ```
+
+The queue is read only. Spotify offers no way to jump to an arbitrary position
+in it, so the rows are labels rather than buttons and no hover or pressed state
+is defined for them. It appears only while a Spotify track is playing: the
+account still has a queue during a browser video, but showing it there would be
+describing the wrong thing.
 
 The volume row disappears entirely when the player has no local audio stream,
 which is normal while nothing is producing sound and always true once playback

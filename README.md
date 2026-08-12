@@ -153,6 +153,11 @@ bind  = SUPER, M,         exec, waytify toggle
 The window is a layer-shell surface rather than a Waybar plugin, so none of this
 depends on Waybar running.
 
+With a Spotify account connected it also lists what is playing next. That list
+is read only, since Spotify offers no way to jump to a position in a queue, and
+it appears only while a Spotify track is playing: your account still has a queue
+during a browser video, but showing it there would be describing the wrong thing.
+
 It starts on first use and then stays resident, hidden, so reopening is instant.
 Starting GTK takes long enough that opening it fresh on every click feels broken.
 
@@ -357,7 +362,8 @@ Each stage is usable on its own.
 - [x] **Volume and output routing.** The player's own volume rather than the
       system's, through PipeWire, with an output device picker.
 - [x] **Spotify layer.** OAuth via PKCE, likes, Connect devices and playback
-      transfer. Optional throughout: without it you still have a working player.
+      transfer, and an up-next list. Optional throughout: without it you still
+      have a working player.
 - [ ] **Lyrics.** Synced lyrics from lrclib, scrolling with the position clock.
 
 ### On Spotify Premium
@@ -375,6 +381,25 @@ same whether you have Premium, a free account, or no Spotify at all.
 ```sh
 cargo test --workspace
 ```
+
+Logging goes to stderr and is off below `info`. The filter is read from
+`WAYTIFY_LOG`, not `RUST_LOG`, and it matches on crate names with underscores:
+
+```sh
+WAYTIFY_LOG=waytify_core=debug waytify daemon
+```
+
+There is a mock player for driving the window without a real one:
+
+```sh
+waytify mock-player                       # a small playlist on the session bus
+WAYTIFY_MOCK_ART=~/cover.png waytify mock-player   # with cover art
+WAYTIFY_MOCK_SPOTIFY=1 waytify mock-player         # with Spotify track links
+```
+
+`WAYTIFY_MOCK_SPOTIFY` matters because waytify decides whether a track is
+Spotify's from its `xesam:url`, not from the player's name. Without it the mock
+never exercises the like button or the queue.
 
 The suite includes an end-to-end test that serves a mock MPRIS player on the
 real session bus and drives the engine against it. The mock reports its track id

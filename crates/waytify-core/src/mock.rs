@@ -43,6 +43,10 @@ pub struct Track {
     /// Left empty by default. The window renders its no-art placeholder, which is
     /// worth being able to look at.
     pub art_url: String,
+    /// `xesam:url`. Empty by default, which keeps the mock a generic MPRIS player.
+    /// Setting it to a Spotify link is what turns on the parts of the engine that
+    /// only run for Spotify's own playback.
+    pub url: String,
 }
 
 impl Track {
@@ -54,6 +58,7 @@ impl Track {
             album: album.into(),
             length_us: seconds * 1_000_000,
             art_url: String::new(),
+            url: String::new(),
         }
     }
 }
@@ -64,6 +69,13 @@ impl Track {
 /// Set `WAYTIFY_MOCK_ART` to a `file://` URL or an image path to give every entry
 /// cover art. Without it the tracks have none, which is the case worth looking at
 /// by default since it exercises the placeholder.
+///
+/// Set `WAYTIFY_MOCK_SPOTIFY=1` to hand every entry a Spotify `xesam:url`. The
+/// engine keys its Spotify-only behaviour off that rather than off the player's
+/// name, so this is what exercises the like button and the queue. The ids are
+/// well formed but invented, which is enough for every call waytify makes: the
+/// queue does not depend on them, and a saved-track check on an unknown id simply
+/// answers no.
 pub fn sample_playlist() -> Vec<Track> {
     let art = std::env::var("WAYTIFY_MOCK_ART").ok().map(|value| {
         if value.starts_with("file://") || value.starts_with("http") {
@@ -73,7 +85,19 @@ pub fn sample_playlist() -> Vec<Track> {
         }
     });
 
-    let with_art = |track: Track| Track { art_url: art.clone().unwrap_or_default(), ..track };
+    let spotify = std::env::var("WAYTIFY_MOCK_SPOTIFY").is_ok_and(|v| v != "0");
+    let mut ids =
+        ["3hQMe0ovH7VVtLDsHqTuLL", "0kvNVh4G6mYqUOMDzcy8fW", "6TZ8CkKsYLhBw2LsUtGjMt"].into_iter();
+
+    let mut prepare = |track: Track| Track {
+        art_url: art.clone().unwrap_or_default(),
+        url: match ids.next() {
+            Some(id) if spotify => format!("https://open.spotify.com/track/{id}"),
+            _ => String::new(),
+        },
+        ..track
+    };
+    let with_art = &mut prepare;
 
     vec![
         with_art(Track::new("mock:track:1", "Digital Love", "Daft Punk", "Discovery", 301)),
@@ -138,6 +162,9 @@ impl Player {
         }
         if !track.art_url.is_empty() {
             put("mpris:artUrl", Value::from(track.art_url.clone()));
+        }
+        if !track.url.is_empty() {
+            put("xesam:url", Value::from(track.url.clone()));
         }
         m
     }

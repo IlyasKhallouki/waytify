@@ -233,3 +233,25 @@
 .waytify-outputs .device:disabled {
   opacity: 0.5;
 }
+
+/* Up next. Read only, so nothing here is styled as interactive. */
+#waytify-popup .waytify-queue .queue-heading {
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  opacity: 0.55;
+}
+
+#waytify-popup .waytify-queue .queue-track {
+  padding: 2px 0;
+}
+
+#waytify-popup .waytify-queue .queue-title {
+  opacity: 0.9;
+}
+
+#waytify-popup .waytify-queue .queue-artist {
+  opacity: 0.5;
+  font-size: 0.85rem;
+}

@@ -288,7 +288,19 @@ impl Client {
 
     /// What is coming up, as far as Spotify will say.
     pub async fn queue(&mut self) -> Result<Vec<waytify_ipc::Track>> {
-        let queue: Queue = self.get_json("/me/player/queue").await?;
+        let response = self.request(reqwest::Method::GET, "/me/player/queue", None).await?;
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+
+        if says_no_queue(status, &body) {
+            return Ok(Vec::new());
+        }
+        if !status.is_success() {
+            bail!("Spotify returned {status} for the queue: {body}");
+        }
+        let queue: Queue =
+            serde_json::from_str(&body).context("unexpected response from /me/player/queue")?;
+
         Ok(queue
             .queue
             .into_iter()
@@ -300,6 +312,16 @@ impl Client {
             })
             .collect())
     }
+}
+
+/// Whether a queue response means "there is nothing queued" rather than carrying
+/// a queue or reporting a failure.
+///
+/// Spotify answers 204 with an empty body when there is no playback to have a
+/// queue for. That is an answer, not an error: treating it as one would leave
+/// the previous queue on screen after playback stopped.
+fn says_no_queue(status: reqwest::StatusCode, body: &str) -> bool {
+    status == reqwest::StatusCode::NO_CONTENT || body.trim().is_empty()
 }
 
 #[cfg(test)]
@@ -327,6 +349,18 @@ mod tests {
         // Spotify really does return devices with no id, which cannot be
         // transferred to and must not be offered as if they could.
         assert!(parsed.devices[1].id.is_none());
+    }
+
+    #[test]
+    fn nothing_playing_reads_as_an_empty_queue() {
+        use reqwest::StatusCode;
+        assert!(says_no_queue(StatusCode::NO_CONTENT, ""));
+        // Seen in the wild: a 200 with nothing in it.
+        assert!(says_no_queue(StatusCode::OK, "  \n "));
+        assert!(!says_no_queue(StatusCode::OK, r#"{"queue":[]}"#), "an empty list is a queue");
+        // A real failure must still surface rather than being read as "nothing
+        // queued", which would hide the problem behind a plausible answer.
+        assert!(!says_no_queue(StatusCode::UNAUTHORIZED, r#"{"error":"expired"}"#));
     }
 
     #[test]

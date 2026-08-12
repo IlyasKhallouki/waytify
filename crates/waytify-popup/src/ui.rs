@@ -24,6 +24,13 @@ const VOLUME_SETTLE: std::time::Duration = std::time::Duration::from_millis(60);
 /// motion event, short enough that a single click still feels immediate.
 const SEEK_SETTLE: std::time::Duration = std::time::Duration::from_millis(150);
 
+/// How many upcoming tracks to list.
+///
+/// Spotify returns up to twenty, which would make the window taller than most
+/// bars have room below them. Five is enough to answer "what is after this" and
+/// still leaves the window a fixed, predictable size.
+const QUEUE_ROWS: usize = 5;
+
 pub struct Ui {
     pub root: gtk4::Box,
     art: gtk4::Image,
@@ -43,6 +50,11 @@ pub struct Ui {
     mute: gtk4::Button,
     output: gtk4::MenuButton,
     output_list: gtk4::Box,
+    queue: gtk4::Box,
+    queue_list: gtk4::Box,
+    /// The queue as last rendered, so rows are rebuilt when it moves rather than
+    /// on every state frame.
+    listed_queue: std::cell::RefCell<Vec<waytify_ipc::Track>>,
     /// Sinks currently listed in the picker, so the list is only rebuilt when the
     /// set of outputs actually changes rather than on every state frame.
     listed_sinks: std::cell::RefCell<(Vec<waytify_ipc::Sink>, Vec<waytify_ipc::Device>)>,
@@ -175,10 +187,22 @@ impl Ui {
         volume_row.append(&volume);
         volume_row.append(&output);
 
+        // Read only. Spotify has no endpoint for jumping to an arbitrary queue
+        // position, so these rows are labels rather than buttons: a row that
+        // looked clickable and did nothing would be worse than one that does not.
+        let queue = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
+        queue.add_css_class("waytify-queue");
+        let queue_heading = label("queue-heading");
+        queue_heading.set_text("Up next");
+        let queue_list = gtk4::Box::new(gtk4::Orientation::Vertical, 2);
+        queue.append(&queue_heading);
+        queue.append(&queue_list);
+
         root.append(&header);
         root.append(&scrub_row);
         root.append(&volume_row);
         root.append(&transport);
+        root.append(&queue);
 
         let ui = Self {
             root,
@@ -199,6 +223,9 @@ impl Ui {
             mute,
             output,
             output_list,
+            queue,
+            queue_list,
+            listed_queue: std::cell::RefCell::new(Vec::new()),
             listed_sinks: std::cell::RefCell::new((Vec::new(), Vec::new())),
             client: Rc::clone(&client),
             dragging: Rc::new(Cell::new(false)),
@@ -404,6 +431,7 @@ impl Ui {
         });
 
         self.render_audio(state);
+        self.render_queue(state);
 
         self.binding.set(false);
     }
@@ -449,6 +477,39 @@ impl Ui {
         // devices to move to.
         let choices = state.audio.sinks.len() + state.spotify.devices.len();
         self.output.set_visible(choices > 1);
+    }
+
+    fn render_queue(&self, state: &State) {
+        let upcoming = &state.spotify.queue[..state.spotify.queue.len().min(QUEUE_ROWS)];
+        self.queue.set_visible(!upcoming.is_empty());
+
+        if self.listed_queue.borrow().as_slice() == upcoming {
+            return;
+        }
+
+        while let Some(child) = self.queue_list.first_child() {
+            self.queue_list.remove(&child);
+        }
+
+        for track in upcoming {
+            let row = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
+            row.add_css_class("queue-track");
+
+            let title = label("queue-title");
+            title.set_text(&track.title);
+            title.set_hexpand(true);
+            row.append(&title);
+
+            let artists = track.artist_line();
+            if !artists.is_empty() {
+                let artist = label("queue-artist");
+                artist.set_text(&artists);
+                row.append(&artist);
+            }
+
+            self.queue_list.append(&row);
+        }
+        *self.listed_queue.borrow_mut() = upcoming.to_vec();
     }
 
     fn rebuild_outputs(&self, state: &State) {

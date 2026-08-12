@@ -54,6 +54,8 @@ enum PlayerEvent {
     },
     /// Spotify refused a library call, so likes are not usable with this token.
     LibraryUnavailable,
+    /// What is coming up next, as far as Spotify will say.
+    Queue(Vec<waytify_ipc::Track>),
     /// The Spotify Connect device list, and whether the account can control it.
     Devices {
         devices: Vec<waytify_ipc::Device>,
@@ -247,6 +249,7 @@ impl Engine {
                 // on an answer nobody would look at.
                 if opened {
                     self.request_devices();
+                    self.request_queue();
                 }
             }
             EngineMsg::Command { command, reply } => {
@@ -356,6 +359,7 @@ impl Engine {
             tracing::info!("no players left");
         }
         self.state.player = None;
+        self.state.spotify.queue.clear();
         self.clock.set_playing(false, Instant::now());
         self.publish();
     }
@@ -389,6 +393,7 @@ impl Engine {
         self.recompute_caps();
         self.request_artwork();
         self.request_liked();
+        self.request_queue();
         self.publish();
         Ok(())
     }
@@ -411,6 +416,17 @@ impl Engine {
                 }
                 self.recompute_caps();
                 self.publish();
+            }
+            PlayerEvent::Queue(queue) => {
+                // The round trip outlives the track it was asked about, so the
+                // player may have moved on to something that is not Spotify's.
+                if !current_is_spotify(&self.state) {
+                    return;
+                }
+                if self.state.spotify.queue != queue {
+                    self.state.spotify.queue = queue;
+                    self.publish();
+                }
             }
             PlayerEvent::LibraryUnavailable => {
                 if self.state.spotify.library_available {
@@ -507,6 +523,43 @@ impl Engine {
                         let _ = events.send(PlayerEvent::LibraryUnavailable).await;
                     }
                 }
+            }
+        });
+    }
+
+    /// Fetch what is playing next.
+    ///
+    /// Tied to track changes and to the window opening rather than to a timer.
+    /// The queue only moves when the track does, so polling it on a clock would
+    /// spend rate limit re-reading an answer that has not changed.
+    ///
+    /// Unlike the device list, which describes the account and is true whatever
+    /// is playing, a queue only means something when the thing playing is the
+    /// thing the queue belongs to. Listing Spotify's next track underneath a
+    /// YouTube video would be worse than listing nothing, so a non-Spotify track
+    /// clears it instead.
+    fn request_queue(&mut self) {
+        if !current_is_spotify(&self.state) {
+            if !self.state.spotify.queue.is_empty() {
+                self.state.spotify.queue.clear();
+                self.publish();
+            }
+            return;
+        }
+        if self.attention != Attention::Popup {
+            return;
+        }
+        let Some(client) = &self.spotify else { return };
+        let client = Arc::clone(client);
+        let events = self.events_tx.clone();
+
+        tokio::spawn(async move {
+            match client.lock().await.queue().await {
+                Ok(queue) => {
+                    tracing::debug!(upcoming = queue.len(), "read the queue");
+                    let _ = events.send(PlayerEvent::Queue(queue)).await;
+                }
+                Err(e) => tracing::debug!("could not read the queue: {e:#}"),
             }
         });
     }
@@ -660,6 +713,7 @@ impl Engine {
             self.recompute_caps();
             self.request_artwork();
             self.request_liked();
+            self.request_queue();
             self.publish();
         }
     }
@@ -1022,6 +1076,15 @@ fn as_str<'a>(v: &'a zbus::zvariant::Value<'a>) -> Option<&'a str> {
     }
 }
 
+/// Whether what is playing is Spotify's own playback.
+///
+/// A Spotify catalogue id on the current track is the signal, rather than the
+/// name of the attached player: playback on a phone over Connect has no local
+/// MPRIS player at all, and the queue is still real in that case.
+fn current_is_spotify(state: &State) -> bool {
+    state.track().and_then(crate::metadata::spotify_track_id).is_some()
+}
+
 fn as_bool(v: &zbus::zvariant::Value<'_>) -> Option<bool> {
     match v {
         zbus::zvariant::Value::Bool(b) => Some(*b),
@@ -1044,5 +1107,38 @@ mod tests {
     fn a_negative_position_reads_as_zero() {
         // Seen from players that briefly report -1 while loading a track.
         assert_eq!(us_to_ms(-1), 0);
+    }
+
+    fn state_playing(url: Option<&str>) -> State {
+        let player = Player {
+            bus_name: "org.mpris.MediaPlayer2.test".into(),
+            identity: "Test".into(),
+            status: Status::Playing,
+            track: Some(waytify_ipc::Track {
+                title: "Something".into(),
+                url: url.map(Into::into),
+                ..Default::default()
+            }),
+            position_ms: 0,
+            shuffle: None,
+            repeat: None,
+        };
+        State { player: Some(player), ..Default::default() }
+    }
+
+    #[test]
+    fn a_spotify_track_owns_the_queue() {
+        let state = state_playing(Some("https://open.spotify.com/track/4uLU6hMCjMI75M1A2tKUQC"));
+        assert!(current_is_spotify(&state));
+    }
+
+    #[test]
+    fn another_players_track_does_not_own_the_queue() {
+        // A browser video is the case that matters: the account still has a
+        // queue, but listing it under something else is describing the wrong
+        // thing.
+        assert!(!current_is_spotify(&state_playing(Some("https://youtube.com/watch?v=x"))));
+        assert!(!current_is_spotify(&state_playing(None)));
+        assert!(!current_is_spotify(&State::default()), "nothing playing owns nothing");
     }
 }
