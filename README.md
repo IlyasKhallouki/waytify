@@ -234,6 +234,11 @@ only = []
 #   "playing"  only while something is actually playing. Note that pausing then
 #              hides the module, so resume from the window or a keybind.
 #   "always"   even with nothing running, which renders format_stopped.
+#
+# Whenever the module renders nothing, it adds an "empty" class. Waybar keeps
+# the widget either way, so a stylesheet with padding or a background leaves an
+# empty pill on the bar without a rule like:
+#   #custom-waytify.empty { background: none; padding: 0; margin: 0; }
 show = "running"
 
 [bar]

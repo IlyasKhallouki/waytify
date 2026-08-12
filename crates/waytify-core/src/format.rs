@@ -206,11 +206,17 @@ pub fn render_bar(state: &State, cfg: &BarConfig) -> BarOutput {
     // rather than a protocol of its own. The classes still go out, so a
     // stylesheet can react to the state even while there is no text.
     if !cfg.shows(state) {
+        let mut class = state.css_classes();
+        // Waybar keeps the widget even with nothing in it, so padding and a
+        // background leave an empty pill sitting on the bar. Saying so in a
+        // class is what lets a stylesheet collapse it, and it is the only way
+        // it can know: the text is gone by the time CSS sees it.
+        class.push("empty".into());
         return BarOutput {
             text: String::new(),
             alt: status.css_class().to_string(),
             tooltip: String::new(),
-            class: state.css_classes(),
+            class,
             percentage: 0,
         };
     }
@@ -220,13 +226,20 @@ pub fn render_bar(state: &State, cfg: &BarConfig) -> BarOutput {
     let text = render(cfg.template(status), &vars);
     let tooltip = render(&cfg.tooltip, &vars);
 
+    let mut class = state.css_classes();
+    // A template can render to nothing on its own, which looks the same on the
+    // bar as being switched off and should be styleable the same way.
+    if text.trim().is_empty() {
+        class.push("empty".into());
+    }
+
     BarOutput {
         text,
         alt: status.css_class().to_string(),
         // A tooltip made only of whitespace still renders as an empty box, so
         // treat it as absent.
         tooltip: if tooltip.trim().is_empty() { String::new() } else { tooltip },
-        class: state.css_classes(),
+        class,
         percentage: state.percentage(),
     }
 }
@@ -265,6 +278,12 @@ mod tests {
         assert!(hidden.text.is_empty());
         assert!(hidden.tooltip.is_empty(), "a tooltip on an invisible module is a stray box");
         assert!(!hidden.class.is_empty(), "the classes still go out so a theme can react");
+        // Waybar keeps the widget, so a stylesheet needs to be told there is
+        // nothing in it or it leaves an empty pill on the bar.
+        assert!(hidden.class.iter().any(|c| c == "empty"));
+
+        let shown = render_bar(&playing(Status::Playing), &cfg(ShowWhen::Playing));
+        assert!(!shown.class.iter().any(|c| c == "empty"));
 
         assert!(!render_bar(&playing(Status::Playing), &cfg(ShowWhen::Playing)).text.is_empty());
 

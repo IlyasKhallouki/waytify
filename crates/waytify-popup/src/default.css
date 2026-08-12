@@ -261,7 +261,9 @@
 /* Lyrics: the line being sung between the one before and the one after. */
 #waytify-popup .waytify-lyrics .lyric-line {
   opacity: 0.3;
-  transition: opacity 250ms ease;
+  /* Matches the fade the window applies when the line changes. A slower
+   * transition here would still be part way out when the words are swapped. */
+  transition: opacity 130ms ease;
 }
 
 #waytify-popup .waytify-lyrics .lyric-line.current {
@@ -269,8 +271,21 @@
   font-weight: 600;
 }
 
+/* Set while the words are being swapped, so a line change is a fade rather
+ * than text changing under your eye. */
+#waytify-popup .waytify-lyrics.stepping .lyric-line,
+#waytify-popup .waytify-lyrics.stepping .lyric-line.current {
+  opacity: 0;
+}
+
 /* Up next, closed until asked for. */
-#waytify-popup .waytify-queue > label {
+#waytify-popup .waytify-queue .queue-heading {
+  background: none;
+  border: none;
+  padding: 4px 0;
+}
+
+#waytify-popup .waytify-queue .queue-heading-label {
   font-size: 0.75rem;
   font-weight: 600;
   letter-spacing: 0.08em;
@@ -297,4 +312,13 @@
   font-size: 0.8rem;
   opacity: 0.45;
   padding: 8px 6px 4px 6px;
+}
+
+#waytify-popup .waytify-transport .repeat.all,
+#waytify-popup .waytify-transport .repeat.one {
+  opacity: 1;
+}
+
+#waytify-popup .waytify-transport .repeat.off {
+  opacity: 0.55;
 }

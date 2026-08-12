@@ -253,10 +253,22 @@
     inset 0 1px 0 alpha(@ink, 0.35);
 }
 
+/* Repeat has three states, like the real client: off, the whole context, and
+ * the one track. The last gets a different glyph where the icon theme has one. */
 .waytify-transport .shuffle:checked,
-.waytify-transport .repeat.on {
+.waytify-transport .repeat.all,
+.waytify-transport .repeat.one {
   color: @pink;
   text-shadow: 0 0 12px alpha(@pink, 0.9);
+}
+
+.waytify-transport .repeat.one {
+  color: @coral;
+  text-shadow: 0 0 12px alpha(@coral, 0.9);
+}
+
+.waytify-transport .repeat.off {
+  color: alpha(@ink, 0.45);
 }
 
 /* Paused takes the light out of it without moving anything. */
@@ -277,7 +289,9 @@
 .waytify-lyrics .lyric-line {
   font-size: 13px;
   color: alpha(@ink, 0.28);
-  transition: color 320ms ease, text-shadow 320ms ease;
+  /* opacity is what the fade between lines animates, and it has to match the
+   * window's timing or the words are swapped while still half visible. */
+  transition: opacity 130ms ease, color 320ms ease, text-shadow 320ms ease;
 }
 
 .waytify-lyrics .lyric-line.current {
@@ -289,21 +303,40 @@
     0 0 34px alpha(@pink, 0.35);
 }
 
+/* Set while the words are swapped, so the line changes as a fade rather than
+ * text jumping under your eye. */
+.waytify-lyrics.stepping .lyric-line,
+.waytify-lyrics.stepping .lyric-line.current {
+  opacity: 0;
+  text-shadow: none;
+}
+
 /* ----------------------------------------------------------------- up next */
 
 .waytify-queue {
   margin-top: 8px;
 }
 
-.waytify-queue > label {
+.waytify-queue .queue-heading {
+  background: none;
+  border: none;
+  padding: 4px 2px;
+}
+
+.waytify-queue .queue-heading-label {
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.14em;
   color: alpha(@pink, 0.7);
 }
 
-.waytify-queue:hover > label {
+.waytify-queue .queue-heading:hover .queue-heading-label,
+.waytify-queue .queue-heading:checked .queue-heading-label {
   color: @pink;
+}
+
+.waytify-queue .queue-chevron {
+  color: alpha(@pink, 0.55);
 }
 
 .waytify-queue .queue-track {

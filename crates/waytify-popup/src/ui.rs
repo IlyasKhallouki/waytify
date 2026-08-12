@@ -31,6 +31,13 @@ const SEEK_SETTLE: std::time::Duration = std::time::Duration::from_millis(150);
 /// of lag reads as broken rather than smooth.
 const TICK: std::time::Duration = std::time::Duration::from_millis(100);
 
+/// How long the lyric lines take to fade out before the next one is written in.
+///
+/// The same again on the way back, so a line change costs twice this. Short
+/// enough to stay ahead of the singing, long enough to read as a change of line
+/// rather than a flicker.
+const LYRIC_FADE: std::time::Duration = std::time::Duration::from_millis(130);
+
 /// How many upcoming tracks to list.
 ///
 /// Spotify returns up to twenty, which would make the window taller than most
@@ -51,6 +58,9 @@ pub struct Ui {
     play_pause: gtk4::Button,
     shuffle: gtk4::ToggleButton,
     repeat: gtk4::Button,
+    /// Whether the icon theme has the one-track repeat glyph, asked once rather
+    /// than on every frame.
+    has_repeat_one: bool,
     like: gtk4::Button,
     volume_row: gtk4::Box,
     volume: gtk4::Scale,
@@ -68,6 +78,9 @@ pub struct Ui {
     /// Which line is highlighted, so a frame that does not move to a new line
     /// costs nothing.
     current_line: Cell<Option<usize>>,
+    /// The fade that is part way through, so a run of quick changes does not
+    /// leave several of them fighting over the same three labels.
+    lyric_fade: Rc<std::cell::RefCell<Option<glib::SourceId>>>,
     /// Where playback was when the last frame arrived, and when that was.
     ///
     /// The bar cannot do this because it receives text the daemon has already
@@ -75,7 +88,8 @@ pub struct Ui {
     /// it can work out where playback has got to rather than waiting to be told.
     anchor: Cell<(u64, std::time::Instant)>,
     playing: Cell<bool>,
-    queue: gtk4::Expander,
+    queue: gtk4::Box,
+    queue_toggle: gtk4::ToggleButton,
     queue_list: gtk4::Box,
     /// The queue as last rendered, so rows are rebuilt when it moves rather than
     /// on every state frame.
@@ -176,6 +190,10 @@ impl Ui {
         let play_pause = button("media-playback-start-symbolic", "playpause");
         let next = button("media-skip-forward-symbolic", "next");
         let repeat = button("media-playlist-repeat-symbolic", "repeat");
+        let has_repeat_one = gtk4::IconTheme::for_display(
+            &gtk4::gdk::Display::default().expect("a display, since the widgets are being built"),
+        )
+        .has_icon("media-playlist-repeat-song-symbolic");
 
         transport.append(&shuffle);
         transport.append(&prev);
@@ -236,11 +254,48 @@ impl Ui {
         // unlike the track and the transport, and a window that opens tall
         // enough to list five songs you did not want to see is worse than one
         // click.
-        let queue = gtk4::Expander::new(Some("Up next"));
+        //
+        // A toggle and a revealer rather than a GtkExpander. The expander
+        // animates its own arrow and child on a timing that is not ours, which
+        // reads as a lurch against a window that is resizing at the same time.
+        // This way the only motion is a fade while the window grows.
+        let queue = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
         queue.add_css_class("waytify-queue");
-        queue.set_expanded(false);
+
+        let queue_toggle = gtk4::ToggleButton::new();
+        queue_toggle.add_css_class("queue-heading");
+        queue_toggle.add_css_class("flat");
+        let heading = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
+        let heading_label = label("queue-heading-label");
+        heading_label.set_text("Up next");
+        heading_label.set_hexpand(true);
+        let chevron = gtk4::Image::from_icon_name("pan-end-symbolic");
+        chevron.add_css_class("queue-chevron");
+        heading.append(&heading_label);
+        heading.append(&chevron);
+        queue_toggle.set_child(Some(&heading));
+
         let queue_list = gtk4::Box::new(gtk4::Orientation::Vertical, 2);
-        queue.set_child(Some(&queue_list));
+        let queue_reveal = gtk4::Revealer::new();
+        queue_reveal.set_transition_type(gtk4::RevealerTransitionType::Crossfade);
+        queue_reveal.set_transition_duration(160);
+        queue_reveal.set_child(Some(&queue_list));
+
+        {
+            let reveal = queue_reveal.clone();
+            let chevron = chevron.clone();
+            queue_toggle.connect_toggled(move |t| {
+                reveal.set_reveal_child(t.is_active());
+                chevron.set_icon_name(Some(if t.is_active() {
+                    "pan-down-symbolic"
+                } else {
+                    "pan-end-symbolic"
+                }));
+            });
+        }
+
+        queue.append(&queue_toggle);
+        queue.append(&queue_reveal);
 
         root.append(&header);
         root.append(&scrub_row);
@@ -262,6 +317,7 @@ impl Ui {
             play_pause,
             shuffle,
             repeat,
+            has_repeat_one,
             like,
             volume_row,
             volume,
@@ -272,9 +328,11 @@ impl Ui {
             lyric_lines,
             listed_lyrics: std::cell::RefCell::new(None),
             current_line: Cell::new(None),
+            lyric_fade: Rc::new(std::cell::RefCell::new(None)),
             anchor: Cell::new((0, std::time::Instant::now())),
             playing: Cell::new(false),
             queue,
+            queue_toggle,
             queue_list,
             listed_queue: std::cell::RefCell::new(Vec::new()),
             listed_devices: std::cell::RefCell::new(Vec::new()),
@@ -462,7 +520,7 @@ impl Ui {
             self.elapsed.set_visible(true);
             self.shuffle.set_active(player.shuffle.unwrap_or(false));
             self.shuffle.set_visible(player.shuffle.is_some());
-            self.repeat.set_visible(player.repeat.is_some());
+            self.render_repeat(player.repeat);
         } else {
             self.elapsed.set_visible(false);
         }
@@ -524,6 +582,38 @@ impl Ui {
             self.rebuild_outputs(state);
             *self.listed_devices.borrow_mut() = state.spotify.devices.clone();
         }
+    }
+
+    /// Show which of the three repeat states is on.
+    ///
+    /// The real client cycles off, then the whole context, then the one track,
+    /// and shows the last of those with a mark on the icon. Cycling without the
+    /// icon changing is worse than having no button: the state does change, and
+    /// nothing says so.
+    fn render_repeat(&self, repeat: Option<waytify_ipc::Repeat>) {
+        use waytify_ipc::Repeat;
+
+        self.repeat.set_visible(repeat.is_some());
+        let repeat = repeat.unwrap_or_default();
+
+        // Not every icon theme carries the one-track variant. Adwaita does not.
+        // Falling back to the plain icon keeps the colour and the class, so the
+        // state is still legible where the glyph is missing.
+        let one = "media-playlist-repeat-song-symbolic";
+        let icon = match repeat {
+            Repeat::Track if self.has_repeat_one => one,
+            _ => "media-playlist-repeat-symbolic",
+        };
+        self.repeat.set_icon_name(icon);
+
+        for class in ["off", "all", "one"] {
+            self.repeat.remove_css_class(class);
+        }
+        self.repeat.add_css_class(match repeat {
+            Repeat::Off => "off",
+            Repeat::Playlist => "all",
+            Repeat::Track => "one",
+        });
     }
 
     /// Where playback has got to, counting from the last frame.
@@ -605,22 +695,52 @@ impl Ui {
     /// what makes the wait look intentional rather than broken.
     fn show_lines(&self, lyrics: &waytify_ipc::Lyrics, current: Option<usize>) {
         let at = |index: Option<usize>| {
-            index.and_then(|i| lyrics.lines.get(i)).map(|l| l.text.as_str()).unwrap_or_default()
+            index.and_then(|i| lyrics.lines.get(i)).map(|l| l.text.clone()).unwrap_or_default()
         };
 
         let (previous, singing, next) = match current {
             Some(i) => (i.checked_sub(1), Some(i), Some(i + 1)),
             None => (None, None, Some(0)),
         };
+        let texts = [at(previous), at(singing), at(next)];
 
-        self.lyric_lines[0].set_text(at(previous));
-        self.lyric_lines[1].set_text(at(singing));
-        self.lyric_lines[2].set_text(at(next));
+        // Fade the three labels down, swap the words while they cannot be read,
+        // and let the stylesheet bring them back. Swapping text under a reader's
+        // eye is the one thing that makes synced lyrics feel mechanical.
+        //
+        // A fade already running is cancelled rather than left to finish: its
+        // callback would clear the class part way through this one and show a
+        // flash of the old line at full brightness.
+        if let Some(pending) = self.lyric_fade.borrow_mut().take() {
+            pending.remove();
+        }
+        self.lyrics.add_css_class("stepping");
+
+        let container = self.lyrics.clone();
+        let labels = self.lyric_lines.clone();
+        let slot = Rc::clone(&self.lyric_fade);
+        let id = glib::timeout_add_local_once(LYRIC_FADE, move || {
+            for (label, text) in labels.iter().zip(&texts) {
+                label.set_text(text);
+            }
+            container.remove_css_class("stepping");
+            // The source has run, so the handle left behind is stale and must
+            // not be removed later by the next change.
+            slot.borrow_mut().take();
+        });
+        *self.lyric_fade.borrow_mut() = Some(id);
     }
 
     fn render_queue(&self, state: &State) {
         let upcoming = &state.spotify.queue[..state.spotify.queue.len().min(QUEUE_ROWS)];
         self.queue.set_visible(!upcoming.is_empty());
+
+        // A section that has gone away has no open state worth keeping. Coming
+        // back already open, showing songs nobody asked to see, contradicts it
+        // being closed to start with.
+        if upcoming.is_empty() {
+            self.queue_toggle.set_active(false);
+        }
 
         if self.listed_queue.borrow().as_slice() == upcoming {
             return;
@@ -889,7 +1009,13 @@ mod tests {
         state.spotify.queue = vec![track("First"), track("Second")];
         ui.render(&state);
         assert!(ui.queue.is_visible());
-        assert!(!ui.queue.is_expanded(), "closed until asked for");
+        assert!(!ui.queue_toggle.is_active(), "closed until asked for");
+
+        // Opening is ours to animate, so the rows have to actually be revealed
+        // by the toggle rather than by a widget doing it for us.
+        ui.queue_toggle.set_active(true);
+        assert!(ui.queue_list.parent().and_downcast::<gtk4::Revealer>().unwrap().reveals_child());
+        ui.queue_toggle.set_active(false);
         assert_eq!(rows(&ui.queue_list), vec!["First", "Second"]);
 
         // More than fits. The window has to stay a predictable size.
@@ -903,11 +1029,14 @@ mod tests {
         ui.render(&state);
         assert_eq!(rows(&ui.queue_list).len(), QUEUE_ROWS);
 
+        ui.queue_toggle.set_active(true);
         state.spotify.queue.clear();
         ui.render(&state);
         assert!(!ui.queue.is_visible(), "the section goes away with its contents");
+        assert!(!ui.queue_toggle.is_active(), "and comes back closed, as it started");
 
         check_stylesheets();
+        check_repeat(&ui);
         check_art_colors_cross_providers(&ui);
         check_lyrics(&ui, &mut state);
         check_the_position_carries_forward(&ui, &mut state);
@@ -1021,6 +1150,47 @@ mod tests {
         gtk4::style_context_remove_provider_for_display(&display, &defines);
     }
 
+    /// Repeat has three states and the button has to show which one it is in.
+    ///
+    /// Reported as "it doesn't change also it does change it", which is exactly
+    /// what a button that cycles a real setting while looking identical feels
+    /// like from the outside.
+    fn check_repeat(ui: &Ui) {
+        use waytify_ipc::Repeat;
+
+        let class = |ui: &Ui| {
+            ["off", "all", "one"]
+                .into_iter()
+                .find(|c| ui.repeat.has_css_class(c))
+                .map(str::to_string)
+        };
+
+        ui.render_repeat(Some(Repeat::Off));
+        assert!(ui.repeat.is_visible());
+        assert_eq!(class(ui).as_deref(), Some("off"));
+
+        ui.render_repeat(Some(Repeat::Playlist));
+        assert_eq!(class(ui).as_deref(), Some("all"), "the whole context");
+
+        ui.render_repeat(Some(Repeat::Track));
+        assert_eq!(class(ui).as_deref(), Some("one"), "the one track");
+
+        // Exactly one state at a time, or a stylesheet sees two and the last
+        // rule in the file wins rather than the state the player is in.
+        let held = ["off", "all", "one"].into_iter().filter(|c| ui.repeat.has_css_class(c)).count();
+        assert_eq!(held, 1);
+
+        // Cycling in the order the real client uses, so muscle memory carries.
+        assert_eq!(Repeat::Off.next(), Repeat::Playlist);
+        assert_eq!(Repeat::Playlist.next(), Repeat::Track);
+        assert_eq!(Repeat::Track.next(), Repeat::Off);
+
+        // A player that does not report repeat at all gets no button, rather
+        // than one that lies about being off.
+        ui.render_repeat(None);
+        assert!(!ui.repeat.is_visible());
+    }
+
     fn check_lyrics(ui: &Ui, state: &mut State) {
         let position = |state: &mut State, ms: u64| {
             state.player.as_mut().expect("a player").position_ms = ms;
@@ -1073,8 +1243,18 @@ mod tests {
         assert!(!ui.lyrics.is_visible());
     }
 
-    /// What the three lyric slots read, top to bottom.
+    /// What the three lyric slots read, top to bottom, once the fade has run.
+    ///
+    /// The words are written part way through a fade rather than immediately,
+    /// so reading the labels straight after a render sees the previous line.
+    /// Pumping the loop is what a running window does between frames.
     fn shown(ui: &Ui) -> [String; 3] {
+        let context = glib::MainContext::default();
+        let deadline = std::time::Instant::now() + LYRIC_FADE * 3;
+        while std::time::Instant::now() < deadline {
+            context.iteration(false);
+            std::thread::sleep(std::time::Duration::from_millis(4));
+        }
         std::array::from_fn(|i| ui.lyric_lines[i].text().to_string())
     }
 

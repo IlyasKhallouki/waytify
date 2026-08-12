@@ -71,13 +71,17 @@ anything, and the window does not even need to be closed.
     │   └── .output                 device picker, shown when Spotify is connected
     ├── .waytify-lyrics            three lines, hidden when there are none
     │   └── .lyric-line             the middle one carries .current
+    │                               .stepping on the parent while lines swap
     ├── .waytify-transport
     │   ├── .shuffle                a GtkToggleButton, so :checked applies
     │   ├── .prev
     │   ├── .playpause
     │   ├── .next
-    │   └── .repeat
-    └── .waytify-queue              a GtkExpander, closed by default
+    │   └── .repeat                 exactly one of .off, .all, .one
+    └── .waytify-queue              closed by default
+        ├── .queue-heading          a GtkToggleButton, so :checked applies
+        │   ├── .queue-heading-label
+        │   └── .queue-chevron
         └── .queue-track            one upcoming track, at most five
             ├── .queue-title
             └── .queue-artist
@@ -93,6 +97,17 @@ anything, and the window does not even need to be closed.
 ├── .outputs-hint
 └── .outputs-refresh
 ```
+
+When the line changes, waytify sets `.stepping` on `.waytify-lyrics`, writes the
+new words part way through, and clears it. A stylesheet turns that into a fade
+by giving `.lyric-line` a transition on `opacity` and setting `opacity: 0` under
+`.stepping`. Keep the transition at about 130ms: a slower one is still part way
+out when the words are swapped, which is the flicker the fade exists to avoid.
+
+Repeat carries exactly one of `.off`, `.all` and `.one`, matching the three
+states the Spotify client cycles through. `.one` also asks for the
+`media-playlist-repeat-song-symbolic` icon and falls back to the plain one where
+the icon theme has no such glyph, so colour is what a theme should rely on.
 
 Lyrics come from lrclib and are shown three lines at a time: the line being
 sung, between the one before and the one after. Only timed lyrics are used, so
