@@ -25,6 +25,14 @@ const TIMEOUT: Duration = Duration::from_secs(10);
 /// that a newly added transcription turns up without clearing the cache by hand.
 const MISS_LIFETIME: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
+/// Bumped whenever the lookup changes in a way that could turn a miss into a
+/// hit.
+///
+/// It is part of the cache key, so old entries simply stop being found. Without
+/// it, everyone who upgrades keeps being told there are no lyrics for a week,
+/// by a cache written by the version that could not find them.
+const LOOKUP_VERSION: u32 = 2;
+
 /// A duration this far from the one asked for is a different recording.
 ///
 /// Live versions, radio edits and remasters share a title and an artist, and
@@ -75,16 +83,22 @@ pub fn key_for(track: &Track) -> Option<String> {
     if track.title.trim().is_empty() {
         return None;
     }
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(identity(track)?.as_bytes());
+    Some(digest.iter().take(8).map(|b| format!("{b:02x}")).collect())
+}
+
+/// What the cache key is a hash of.
+fn identity(track: &Track) -> Option<String> {
+    if track.title.trim().is_empty() {
+        return None;
+    }
     let seconds = duration_s(track).unwrap_or(0);
-    let identity = format!(
-        "{}\u{1}{}\u{1}{seconds}",
+    Some(format!(
+        "{LOOKUP_VERSION}\u{1}{}\u{1}{}\u{1}{seconds}",
         track.artist_line().to_lowercase(),
         track.title.to_lowercase()
-    );
-
-    use sha2::{Digest, Sha256};
-    let digest = Sha256::digest(identity.as_bytes());
-    Some(digest.iter().take(8).map(|b| format!("{b:02x}")).collect())
+    ))
 }
 
 /// A track's length in whole seconds, when the player has reported one.
@@ -144,9 +158,9 @@ async fn lookup(track: &Track) -> Result<Option<Lyrics>> {
     let artist = track.artist_line();
     let seconds = duration_s(track);
 
-    // The exact endpoint matches on all four fields at once and is the only one
-    // that can be trusted without checking the answer, so it is worth asking
-    // first even though it misses more often.
+    // The exact endpoint matches on all four fields at once, so its answer can
+    // be trusted without checking it. Worth asking first even though it misses
+    // more often.
     if let Some(seconds) = seconds {
         let query = [
             ("artist_name", artist.clone()),
@@ -157,19 +171,71 @@ async fn lookup(track: &Track) -> Result<Option<Lyrics>> {
         let response = http.get(format!("{API}/get")).query(&query).send().await?;
         if response.status().is_success() {
             let record: Record = response.json().await.context("reading the lrclib record")?;
-            return Ok(convert(record));
+            // A hit with no timings is not the end of the search. The same
+            // recording is often uploaded more than once, and another copy may
+            // be timed where this one is not.
+            if let Some(lyrics) = convert(record) {
+                return Ok(Some(lyrics));
+            }
         }
     }
 
-    // The search endpoint ignores album and duration, so several recordings of
-    // the same song come back together and the right one has to be picked out.
-    let query = [("artist_name", artist), ("track_name", track.title.clone())];
+    if let Some(lyrics) = search(&http, &artist, &track.title, seconds).await? {
+        return Ok(Some(lyrics));
+    }
+
+    // Titles carry things lrclib's do not. "AMNESIA - LIVE SESSION" is filed
+    // under "AMNESIA", and the duration check is what stops this reaching for
+    // the studio cut instead: a live take is minutes away from it.
+    let plain = plain_title(&track.title);
+    if plain != track.title {
+        return search(&http, &artist, &plain, seconds).await;
+    }
+    Ok(None)
+}
+
+/// Search by artist and title, and pick the recording being played.
+///
+/// The search endpoint ignores album and duration, so several recordings of one
+/// song come back together and the right one has to be found among them.
+async fn search(
+    http: &reqwest::Client,
+    artist: &str,
+    title: &str,
+    seconds: Option<i64>,
+) -> Result<Option<Lyrics>> {
+    let query = [("artist_name", artist), ("track_name", title)];
     let response = http.get(format!("{API}/search")).query(&query).send().await?;
     if !response.status().is_success() {
         return Ok(None);
     }
     let records: Vec<Record> = response.json().await.context("reading the lrclib results")?;
-    Ok(best_match(records, seconds).and_then(convert))
+
+    // Only timed records are worth choosing between, since an untimed one is
+    // discarded later anyway and letting it win would hide a timed copy sitting
+    // further down the results.
+    let timed = records.into_iter().filter(|r| r.synced_lyrics.is_some()).collect();
+    Ok(best_match(timed, seconds).and_then(convert))
+}
+
+/// A title with the edition stripped off.
+///
+/// Players report what the release is called, and lrclib is filed under what the
+/// song is called. Everything after a spaced dash is a qualifier in practice:
+/// live session, remastered, radio edit, the year of a reissue. Trailing
+/// brackets go the same way.
+///
+/// Only ever used as a second attempt, and the duration check still has to pass,
+/// so a title that genuinely contains a dash loses nothing by being tried twice.
+fn plain_title(title: &str) -> String {
+    let mut out = title.split(" - ").next().unwrap_or(title).trim();
+    while out.ends_with(')') {
+        match out.rfind(" (") {
+            Some(open) => out = out[..open].trim_end(),
+            None => break,
+        }
+    }
+    out.to_string()
 }
 
 /// The result that is the same recording as the track being played.
@@ -351,6 +417,20 @@ mod tests {
     }
 
     #[test]
+    fn a_title_keeps_the_song_and_loses_the_edition() {
+        assert_eq!(plain_title("AMNESIA - LIVE SESSION"), "AMNESIA");
+        assert_eq!(plain_title("Song - Remastered 2011"), "Song");
+        assert_eq!(plain_title("Song (Live)"), "Song");
+        assert_eq!(plain_title("Song (feat. Someone) (Live)"), "Song");
+        assert_eq!(plain_title("Song"), "Song", "nothing to strip");
+
+        // A dash inside the name itself. The result is wrong as a title, which
+        // is why it is only ever a second attempt behind an exact match, and why
+        // the duration still has to agree before it is used.
+        assert_eq!(plain_title("Sunday - Bloody Sunday"), "Sunday");
+    }
+
+    #[test]
     fn the_closest_recording_wins_and_a_distant_one_is_refused() {
         let record = |duration: f64| Record {
             duration: Some(duration),
@@ -431,6 +511,13 @@ mod tests {
         assert_eq!(key_for(&track("song", "band", 180)), key_for(&track("Song", "Band", 180)));
 
         assert_eq!(key_for(&track("", "Band", 180)), None, "nothing to look up");
+
+        // The version is part of what is hashed, so a release that searches
+        // better is not held to the answers of one that searched worse. Without
+        // it, an upgrade keeps being told there are no lyrics for a week by a
+        // cache written by the version that could not find them.
+        let id = identity(&track("Song", "Band", 180)).unwrap();
+        assert!(id.starts_with(&format!("{LOOKUP_VERSION}\u{1}")), "got {id:?}");
 
         // A player that has not reported a length yet must not be cached as a
         // recording of zero seconds, which would then be the answer for the
