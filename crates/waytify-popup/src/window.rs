@@ -6,7 +6,7 @@ use gtk4::prelude::*;
 use gtk4::{Application, ApplicationWindow};
 use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
 use std::rc::Rc;
-use waytify_ipc::PopupAction;
+use waytify_ipc::{Command, PopupAction};
 
 /// Wayland namespace for the surface. Compositor rules match on this, so it is
 /// documented and stable.
@@ -21,6 +21,12 @@ const WIDTH: i32 = 380;
 pub struct Popup {
     window: ApplicationWindow,
     dismiss: ApplicationWindow,
+    client: Rc<client::Client>,
+    /// What the daemon was last told about this window being on screen.
+    ///
+    /// Tracked rather than inferred, because the daemon forgets it when it
+    /// restarts and the window does not close to match.
+    announced: std::cell::Cell<bool>,
 }
 
 impl Popup {
@@ -44,6 +50,7 @@ impl Popup {
     }
 
     fn show(&self, at: Option<waytify_ipc::Point>) {
+        self.announce(true);
         place(&self.window, at);
 
         // Same output as the popup, otherwise a click on the monitor the popup
@@ -54,8 +61,36 @@ impl Popup {
     }
 
     fn hide(&self) {
+        self.announce(false);
         self.window.set_visible(false);
         self.dismiss.set_visible(false);
+    }
+
+    /// Tell the daemon whether this window is on screen.
+    ///
+    /// It cannot tell a hidden window from a closed one, since this process
+    /// stays connected either way, and everything polled for the window's
+    /// benefit waits to hear that there is something to look at.
+    fn announce(&self, active: bool) {
+        if self.announced.replace(active) == active {
+            return;
+        }
+        self.client.send(Command::Watching { active });
+    }
+
+    /// Say it again if the daemon has forgotten.
+    ///
+    /// A daemon that restarts comes back knowing nothing about this window,
+    /// while the window is still open on screen. Without this it would stay
+    /// that way until the user closed and reopened it, with the queue, the
+    /// device list and the lyrics all quietly frozen.
+    pub fn resync(&self) {
+        self.announce(self.window.is_visible());
+    }
+
+    /// Everything the daemon knew about this window is gone with it.
+    pub fn forget(&self) {
+        self.announced.set(false);
     }
 
     /// Mark the displayed state as stale when the daemon goes away.
@@ -112,7 +147,12 @@ pub fn build(app: &Application, options: Options) -> Result<()> {
     let ui = Rc::new(ui::Ui::build(Rc::clone(&client)));
     window.set_child(Some(&ui.root));
 
-    let popup = Rc::new(Popup { window: window.clone(), dismiss });
+    let popup = Rc::new(Popup {
+        window: window.clone(),
+        dismiss,
+        client: Rc::clone(&client),
+        announced: std::cell::Cell::new(false),
+    });
     dismiss_on_escape(&popup);
     catch_outside_clicks(&popup);
     ui::drive(Rc::clone(&ui), Rc::clone(&popup), client);

@@ -1015,6 +1015,7 @@ impl Engine {
             | Command::ShowPopup { .. }
             | Command::HidePopup
             | Command::Subscribe { .. }
+            | Command::Watching { .. }
             | Command::Shutdown => {}
         }
         Ok(())

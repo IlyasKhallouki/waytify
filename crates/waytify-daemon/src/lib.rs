@@ -39,13 +39,19 @@ struct Ctx {
 struct Watchers {
     bar: AtomicUsize,
     full: AtomicUsize,
+    /// Full-scope clients whose window is on screen right now.
+    watching: AtomicUsize,
 }
 
 impl Watchers {
     fn attention(&self) -> Attention {
-        if self.full.load(Ordering::Relaxed) > 0 {
+        // A connected window is not a visible one. It stays subscribed while
+        // hidden so that reopening is instant, and polling on its behalf the
+        // whole time it sits in the background spends rate limit, and somebody
+        // else's bandwidth, on frames nobody can see.
+        if self.watching.load(Ordering::Relaxed) > 0 {
             Attention::Popup
-        } else if self.bar.load(Ordering::Relaxed) > 0 {
+        } else if self.bar.load(Ordering::Relaxed) > 0 || self.full.load(Ordering::Relaxed) > 0 {
             Attention::Bar
         } else {
             Attention::Idle
@@ -169,6 +175,8 @@ async fn serve_client(stream: UnixStream, ctx: &Arc<Ctx>) -> Result<()> {
     let mut states = ctx.states.clone();
     let mut popups = ctx.popup.subscribe();
     let mut scope: Option<Scope> = None;
+    // Whether this client has said its window is on screen.
+    let mut watching = false;
 
     send(
         &mut writer,
@@ -194,6 +202,10 @@ async fn serve_client(stream: UnixStream, ctx: &Arc<Ctx>) -> Result<()> {
                         // renders something.
                         let state = { states.borrow_and_update().clone() };
                         send_state(&mut writer, requested, &state, ctx).await?;
+                    }
+                    Ok(Command::Watching { active }) => {
+                        set_watching(ctx, &mut watching, active).await;
+                        send(&mut writer, &Frame::Ack).await?;
                     }
                     Ok(Command::Shutdown) => {
                         // Acknowledge before tearing down, otherwise `waytify stop`
@@ -237,8 +249,13 @@ async fn serve_client(stream: UnixStream, ctx: &Arc<Ctx>) -> Result<()> {
         }
     };
 
+    if watching {
+        ctx.watchers.watching.fetch_sub(1, Ordering::Relaxed);
+    }
     if let Some(scope) = scope {
         ctx.watchers.counter(scope).fetch_sub(1, Ordering::Relaxed);
+    }
+    if watching || scope.is_some() {
         notify_attention(ctx).await;
     }
     result
@@ -372,6 +389,20 @@ async fn set_scope(ctx: &Arc<Ctx>, current: &mut Option<Scope>, requested: Scope
     notify_attention(ctx).await;
 }
 
+/// Record whether this client's window is on screen.
+async fn set_watching(ctx: &Arc<Ctx>, current: &mut bool, active: bool) {
+    if *current == active {
+        return;
+    }
+    *current = active;
+    if active {
+        ctx.watchers.watching.fetch_add(1, Ordering::Relaxed);
+    } else {
+        ctx.watchers.watching.fetch_sub(1, Ordering::Relaxed);
+    }
+    notify_attention(ctx).await;
+}
+
 async fn notify_attention(ctx: &Arc<Ctx>) {
     let _ = ctx.engine.send(EngineMsg::Attention(ctx.watchers.attention())).await;
 }
@@ -414,14 +445,28 @@ mod tests {
         w.bar.fetch_add(1, Ordering::Relaxed);
         assert_eq!(w.attention(), Attention::Bar);
 
-        // An open popup draws a scrubber, so it outranks any number of bars.
+        // Connecting is not watching. The window stays subscribed while hidden,
+        // and polling the Spotify API and lrclib on its behalf the whole time it
+        // sits in the background is exactly the waste this distinguishes.
         w.full.fetch_add(1, Ordering::Relaxed);
+        assert_eq!(w.attention(), Attention::Bar, "a hidden window is not watching");
+
+        // An open popup draws a scrubber, so it outranks any number of bars.
+        w.watching.fetch_add(1, Ordering::Relaxed);
         assert_eq!(w.attention(), Attention::Popup);
+
+        w.watching.fetch_sub(1, Ordering::Relaxed);
+        assert_eq!(w.attention(), Attention::Bar, "hiding it goes back to the bar's pace");
 
         w.full.fetch_sub(1, Ordering::Relaxed);
         assert_eq!(w.attention(), Attention::Bar);
 
         w.bar.fetch_sub(1, Ordering::Relaxed);
         assert_eq!(w.attention(), Attention::Idle, "no clients means no polling");
+
+        // A window on its own, with no bar running at all, still counts.
+        w.full.fetch_add(1, Ordering::Relaxed);
+        w.watching.fetch_add(1, Ordering::Relaxed);
+        assert_eq!(w.attention(), Attention::Popup);
     }
 }

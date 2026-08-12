@@ -154,8 +154,9 @@ depends on Waybar running.
 
 It shows lyrics when [lrclib](https://lrclib.net) has them, highlighting and
 scrolling the current line. That needs no account and no Spotify: it is looked
-up from the artist, title and length of whatever is playing. Lyrics are only
-requested while the window is open, and both hits and misses are cached.
+up from the artist, title and length of whatever is playing. Nothing is
+requested unless the window is actually on screen, and both hits and misses are
+cached.
 
 With a Spotify account connected it also lists what is playing next. That list
 is read only, since Spotify offers no way to jump to a position in a queue, and

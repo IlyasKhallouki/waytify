@@ -820,6 +820,7 @@ pub fn drive(ui: Rc<Ui>, popup: Rc<crate::window::Popup>, client: Rc<Client>) {
             match update {
                 crate::client::Update::State(state) => {
                     popup.set_offline(false);
+                    popup.resync();
                     ui.render(&state);
                 }
                 crate::client::Update::Popup(action) => popup.apply(action),
@@ -828,6 +829,7 @@ pub fn drive(ui: Rc<Ui>, popup: Rc<crate::window::Popup>, client: Rc<Client>) {
                     // because a background service restarted is worse than one
                     // showing something a second out of date.
                     popup.set_offline(true);
+                    popup.forget();
                 }
                 crate::client::Update::Incompatible(message) => {
                     tracing::error!("{message}");

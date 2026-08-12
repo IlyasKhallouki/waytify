@@ -8,7 +8,7 @@
 //! This process holds no state. It renders whatever the daemon last sent and
 //! sends commands back, which keeps it cheap to kill and restart.
 
-mod client;
+pub(crate) mod client;
 mod style;
 mod ui;
 pub mod window;

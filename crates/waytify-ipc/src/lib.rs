@@ -76,6 +76,17 @@ pub enum Command {
         scope: Scope,
     },
 
+    /// Whether this client's window is actually on screen.
+    ///
+    /// Subscribing is not the same as watching. The player window stays
+    /// connected while hidden, because reopening it has to be instant, so the
+    /// daemon cannot tell from the connection alone whether anyone can see what
+    /// it publishes. Anything polled for the window's benefit, which is the
+    /// device list, the queue and lyrics, waits for this.
+    Watching {
+        active: bool,
+    },
+
     // Transport. These route to MPRIS, never to the Spotify Web API: MPRIS has no
     // rate limit, needs no token, and works when the network is down.
     PlayPause,
