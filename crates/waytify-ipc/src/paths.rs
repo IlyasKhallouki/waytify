@@ -24,10 +24,20 @@ pub fn runtime_dir() -> PathBuf {
 /// Override with `WAYTIFY_SOCKET` to run a second daemon side by side, which is
 /// how the test suite avoids touching a live one.
 pub fn socket_path() -> PathBuf {
-    if let Some(p) = std::env::var_os("WAYTIFY_SOCKET") {
-        return PathBuf::from(p);
+    resolve_socket(std::env::var_os("WAYTIFY_SOCKET"))
+}
+
+/// The socket path for a given value of the override.
+///
+/// Split out so it can be tested both ways. Reading the environment inside the
+/// test would make the result depend on the shell it runs in, and a developer
+/// running a second daemon has that variable set, which is the situation the
+/// override exists for in the first place.
+fn resolve_socket(override_path: Option<std::ffi::OsString>) -> PathBuf {
+    match override_path {
+        Some(p) => PathBuf::from(p),
+        None => runtime_dir().join("sock"),
     }
-    runtime_dir().join("sock")
 }
 
 /// Config directory, holding `config.toml` and `style.css`.
@@ -75,11 +85,20 @@ mod tests {
 
     #[test]
     fn socket_sits_under_the_runtime_dir() {
-        // Reading real env vars here would make the test depend on the machine,
-        // so assert the shape rather than an absolute path.
-        let sock = socket_path();
+        // The shape rather than an absolute path, which would depend on the
+        // machine.
+        let sock = resolve_socket(None);
         assert_eq!(sock.file_name().unwrap(), "sock");
-        assert!(sock.parent().is_some());
+        assert_eq!(sock.parent(), Some(runtime_dir().as_path()));
+    }
+
+    #[test]
+    fn the_socket_override_is_taken_exactly_as_given() {
+        // Not joined onto the runtime directory and not given a suffix: a second
+        // daemon is started by pointing this at a path, and anything added to it
+        // would send its clients somewhere else.
+        let sock = resolve_socket(Some("/tmp/somewhere/else.sock".into()));
+        assert_eq!(sock, PathBuf::from("/tmp/somewhere/else.sock"));
     }
 
     #[test]

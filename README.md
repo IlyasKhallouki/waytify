@@ -8,9 +8,8 @@ Written in Rust. Themed with CSS.
 
 ![The waytify player window](docs/images/popup.png)
 
-> **Status: early but usable.** Everything below works except lyrics. The
-> Spotify layer is optional: without it you still get a full player for any MPRIS
-> source. See [roadmap](#roadmap).
+> **Status: early but usable.** The Spotify layer is optional: without it you
+> still get a full player for any MPRIS source. See [roadmap](#roadmap).
 
 ## Why this exists
 
@@ -153,6 +152,11 @@ bind  = SUPER, M,         exec, waytify toggle
 The window is a layer-shell surface rather than a Waybar plugin, so none of this
 depends on Waybar running.
 
+It shows lyrics when [lrclib](https://lrclib.net) has them, highlighting and
+scrolling the current line. That needs no account and no Spotify: it is looked
+up from the artist, title and length of whatever is playing. Lyrics are only
+requested while the window is open, and both hits and misses are cached.
+
 With a Spotify account connected it also lists what is playing next. That list
 is read only, since Spotify offers no way to jump to a position in a queue, and
 it appears only while a Spotify track is playing: your account still has a queue
@@ -216,6 +220,13 @@ tooltip = "{title}[\n{artist}][\n{album}][\n\n{position} / {duration}]"
 playing = "▶"
 paused = "⏸"
 stopped = "⏹"
+
+[lyrics]
+# Looked up from lrclib.net, which needs no account. This is the only request
+# waytify makes to a service you have not already chosen to talk to, so it has
+# its own switch. Nothing is sent but an artist, a title and a length, and only
+# while the window is open.
+enabled = true
 ```
 
 ### Template syntax
@@ -364,7 +375,7 @@ Each stage is usable on its own.
 - [x] **Spotify layer.** OAuth via PKCE, likes, Connect devices and playback
       transfer, and an up-next list. Optional throughout: without it you still
       have a working player.
-- [ ] **Lyrics.** Synced lyrics from lrclib, scrolling with the position clock.
+- [x] **Lyrics.** Synced lyrics from lrclib, scrolling with the position clock.
 
 ### On Spotify Premium
 

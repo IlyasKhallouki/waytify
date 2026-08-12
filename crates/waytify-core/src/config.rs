@@ -13,6 +13,7 @@ pub struct Config {
     pub player: PlayerConfig,
     pub bar: BarConfig,
     pub spotify: SpotifyConfig,
+    pub lyrics: LyricsConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -40,6 +41,23 @@ pub struct SpotifyConfig {
 impl Default for SpotifyConfig {
     fn default() -> Self {
         Self { client_id: String::new(), redirect_port: 8888 }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct LyricsConfig {
+    /// Whether to look lyrics up at all.
+    ///
+    /// On by default. Turning it off stops waytify contacting lrclib, which is
+    /// the only request it makes that is not to a service you have already
+    /// chosen to talk to.
+    pub enabled: bool,
+}
+
+impl Default for LyricsConfig {
+    fn default() -> Self {
+        Self { enabled: true }
     }
 }
 

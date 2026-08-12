@@ -24,6 +24,12 @@ const VOLUME_SETTLE: std::time::Duration = std::time::Duration::from_millis(60);
 /// motion event, short enough that a single click still feels immediate.
 const SEEK_SETTLE: std::time::Duration = std::time::Duration::from_millis(150);
 
+/// Height of the lyrics pane, in pixels.
+///
+/// Fixed rather than sized to its contents, so the window is the same height on
+/// a track with four hundred lines as on one with none.
+const LYRICS_HEIGHT: i32 = 132;
+
 /// How many upcoming tracks to list.
 ///
 /// Spotify returns up to twenty, which would make the window taller than most
@@ -50,6 +56,17 @@ pub struct Ui {
     mute: gtk4::Button,
     output: gtk4::MenuButton,
     output_list: gtk4::Box,
+    lyrics: gtk4::ScrolledWindow,
+    lyrics_list: gtk4::Box,
+    /// One label per line, so the current one can be highlighted and scrolled to
+    /// without walking the widget tree on every frame.
+    lyric_lines: std::cell::RefCell<Vec<gtk4::Label>>,
+    /// The lyrics as last built, so the rows are rebuilt when the track changes
+    /// rather than once a second.
+    listed_lyrics: std::cell::RefCell<Option<waytify_ipc::Lyrics>>,
+    /// Which line is highlighted, so a frame that does not move to a new line
+    /// costs nothing.
+    current_line: Cell<Option<usize>>,
     queue: gtk4::Box,
     queue_list: gtk4::Box,
     /// The queue as last rendered, so rows are rebuilt when it moves rather than
@@ -187,6 +204,17 @@ impl Ui {
         volume_row.append(&volume);
         volume_row.append(&output);
 
+        // One pane for both kinds. Timed lyrics scroll and highlight; lyrics
+        // with no timing are the same list without either, rather than a second
+        // widget that exists to show the same text.
+        let lyrics = gtk4::ScrolledWindow::new();
+        lyrics.add_css_class("waytify-lyrics");
+        lyrics.set_policy(gtk4::PolicyType::Never, gtk4::PolicyType::Automatic);
+        lyrics.set_min_content_height(LYRICS_HEIGHT);
+        lyrics.set_max_content_height(LYRICS_HEIGHT);
+        let lyrics_list = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
+        lyrics.set_child(Some(&lyrics_list));
+
         // Read only. Spotify has no endpoint for jumping to an arbitrary queue
         // position, so these rows are labels rather than buttons: a row that
         // looked clickable and did nothing would be worse than one that does not.
@@ -202,6 +230,7 @@ impl Ui {
         root.append(&scrub_row);
         root.append(&volume_row);
         root.append(&transport);
+        root.append(&lyrics);
         root.append(&queue);
 
         let ui = Self {
@@ -223,6 +252,11 @@ impl Ui {
             mute,
             output,
             output_list,
+            lyrics,
+            lyrics_list,
+            lyric_lines: std::cell::RefCell::new(Vec::new()),
+            listed_lyrics: std::cell::RefCell::new(None),
+            current_line: Cell::new(None),
             queue,
             queue_list,
             listed_queue: std::cell::RefCell::new(Vec::new()),
@@ -431,6 +465,7 @@ impl Ui {
         });
 
         self.render_audio(state);
+        self.render_lyrics(state);
         self.render_queue(state);
 
         self.binding.set(false);
@@ -477,6 +512,65 @@ impl Ui {
         // devices to move to.
         let choices = state.audio.sinks.len() + state.spotify.devices.len();
         self.output.set_visible(choices > 1);
+    }
+
+    fn render_lyrics(&self, state: &State) {
+        let lyrics = state.lyrics.as_ref();
+        self.lyrics.set_visible(lyrics.is_some());
+        let Some(lyrics) = lyrics else {
+            return;
+        };
+
+        if self.listed_lyrics.borrow().as_ref() != Some(lyrics) {
+            self.rebuild_lyrics(lyrics);
+            *self.listed_lyrics.borrow_mut() = Some(lyrics.clone());
+            self.current_line.set(None);
+        }
+
+        if !lyrics.is_synced() {
+            return;
+        }
+
+        let current = lyrics.line_at(state.player.as_ref().map_or(0, |p| p.position_ms));
+        if current == self.current_line.get() {
+            return;
+        }
+
+        let rows = self.lyric_lines.borrow();
+        if let Some(previous) = self.current_line.get().and_then(|i| rows.get(i)) {
+            previous.remove_css_class("current");
+        }
+        if let Some(row) = current.and_then(|i| rows.get(i)) {
+            row.add_css_class("current");
+            scroll_into_view(&self.lyrics, row);
+        }
+        self.current_line.set(current);
+    }
+
+    fn rebuild_lyrics(&self, lyrics: &waytify_ipc::Lyrics) {
+        while let Some(child) = self.lyrics_list.first_child() {
+            self.lyrics_list.remove(&child);
+        }
+
+        let texts: Vec<&str> = if lyrics.is_synced() {
+            lyrics.lines.iter().map(|l| l.text.as_str()).collect()
+        } else {
+            lyrics.plain.as_deref().unwrap_or_default().lines().collect()
+        };
+
+        let mut rows = Vec::with_capacity(texts.len());
+        for text in texts {
+            let row = label("lyric-line");
+            row.set_text(text);
+            // Lyrics are prose, not metadata: wrapping keeps a long line
+            // readable where the ellipsis every other label uses would eat it.
+            row.set_ellipsize(gtk4::pango::EllipsizeMode::None);
+            row.set_wrap(true);
+            row.set_max_width_chars(34);
+            self.lyrics_list.append(&row);
+            rows.push(row);
+        }
+        *self.lyric_lines.borrow_mut() = rows;
     }
 
     fn render_queue(&self, state: &State) {
@@ -578,6 +672,30 @@ impl Ui {
     }
 }
 
+/// Bring a line to the middle of the pane.
+///
+/// Deferred to an idle callback because a row built this frame has no size yet,
+/// and scrolling to a widget whose height is still zero puts the view at the top
+/// every time.
+fn scroll_into_view(pane: &gtk4::ScrolledWindow, row: &gtk4::Label) {
+    let pane = pane.clone();
+    let row = row.clone();
+    glib::idle_add_local_once(move || {
+        let adjustment = pane.vadjustment();
+        let height = f64::from(row.height());
+        let origin = gtk4::graphene::Point::new(0.0, 0.0);
+        let Some(point) = row.compute_point(&pane, &origin) else { return };
+
+        // The point is relative to the visible area, so the scroll position the
+        // pane is already at has to be added back to get the offset within the
+        // list.
+        let top = f64::from(point.y());
+        let centre = adjustment.value() + top + height / 2.0 - adjustment.page_size() / 2.0;
+        adjustment
+            .set_value(centre.clamp(0.0, (adjustment.upper() - adjustment.page_size()).max(0.0)));
+    });
+}
+
 fn label(class: &str) -> gtk4::Label {
     let l = gtk4::Label::new(None);
     l.add_css_class(class);
@@ -661,7 +779,7 @@ pub fn drive(ui: Rc<Ui>, popup: Rc<crate::window::Popup>, client: Rc<Client>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use waytify_ipc::{Player, State, Status, Track};
+    use waytify_ipc::{LyricLine, Lyrics, Player, State, Status, Track};
 
     /// One test rather than several, on purpose.
     ///
@@ -674,7 +792,7 @@ mod tests {
     /// widget tree, not the compositor. It skips where there is no display, in
     /// the same way the D-Bus tests skip without a session bus.
     #[test]
-    fn the_queue_shows_what_is_next_and_disappears_when_there_is_none() {
+    fn the_window_renders_state_into_its_widgets() {
         if gtk4::init().is_err() {
             eprintln!("no display; skipping");
             return;
@@ -722,6 +840,76 @@ mod tests {
         state.spotify.queue.clear();
         ui.render(&state);
         assert!(!ui.queue.is_visible(), "the section goes away with its contents");
+
+        check_lyrics(&ui, &mut state);
+    }
+
+    fn check_lyrics(ui: &Ui, state: &mut State) {
+        let position = |state: &mut State, ms: u64| {
+            state.player.as_mut().expect("a player").position_ms = ms;
+        };
+
+        ui.render(state);
+        assert!(!ui.lyrics.is_visible(), "no lyrics, no pane");
+
+        state.lyrics = Some(Lyrics {
+            lines: vec![
+                LyricLine { at_ms: 10_000, text: "First".into() },
+                LyricLine { at_ms: 20_000, text: "Second".into() },
+                LyricLine { at_ms: 30_000, text: "Third".into() },
+            ],
+            plain: None,
+        });
+
+        position(state, 0);
+        ui.render(state);
+        assert!(ui.lyrics.is_visible());
+        assert_eq!(ui.lyric_lines.borrow().len(), 3);
+        assert_eq!(highlighted(ui), None, "nothing is highlighted through the intro");
+
+        position(state, 15_000);
+        ui.render(state);
+        assert_eq!(highlighted(ui).as_deref(), Some("First"), "a line holds until the next");
+
+        position(state, 30_000);
+        ui.render(state);
+        assert_eq!(highlighted(ui).as_deref(), Some("Third"));
+        assert_eq!(
+            ui.lyric_lines.borrow().iter().filter(|l| l.has_css_class("current")).count(),
+            1,
+            "the line it moved off is no longer highlighted"
+        );
+
+        // A second frame on the same line must not rebuild the pane, which
+        // would drop the highlight and fight the scroll position once a second.
+        let before: Vec<_> = ui.lyric_lines.borrow().clone();
+        ui.render(state);
+        assert!(
+            before.iter().zip(ui.lyric_lines.borrow().iter()).all(|(a, b)| a == b),
+            "the same lyrics are not rebuilt"
+        );
+        assert_eq!(highlighted(ui).as_deref(), Some("Third"));
+
+        // Lyrics with no timing are the same list without a highlight, rather
+        // than a pane that stays empty because nothing can be current.
+        state.lyrics = Some(Lyrics { lines: Vec::new(), plain: Some("One\nTwo".into()) });
+        ui.render(state);
+        assert!(ui.lyrics.is_visible());
+        assert_eq!(ui.lyric_lines.borrow().len(), 2);
+        assert_eq!(highlighted(ui), None, "there is no current line without timings");
+
+        state.lyrics = None;
+        ui.render(state);
+        assert!(!ui.lyrics.is_visible());
+    }
+
+    /// The text of the highlighted lyric line, if there is one.
+    fn highlighted(ui: &Ui) -> Option<String> {
+        ui.lyric_lines
+            .borrow()
+            .iter()
+            .find(|l| l.has_css_class("current"))
+            .map(|l| l.text().to_string())
     }
 
     /// The title of each row, in order.

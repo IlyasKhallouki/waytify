@@ -69,6 +69,8 @@ anything, and the window does not even need to be closed.
     │   ├── .mute                   gains .muted when muted
     │   ├── .volume-slider          a GtkScale
     │   └── .output                 device picker, hidden with only one output
+    ├── .waytify-lyrics            a scrolling pane, hidden when there are none
+    │   └── .lyric-line             gains .current on the line being sung
     ├── .waytify-transport
     │   ├── .shuffle                a GtkToggleButton, so :checked applies
     │   ├── .prev
@@ -87,6 +89,13 @@ anything, and the window does not even need to be closed.
 .waytify-outputs                    the output picker popover
 └── .device                         one output, gains .active for the current one
 ```
+
+Lyrics come from lrclib and are shown in one pane whether or not they carry
+timings. Timed ones highlight the current line and scroll it to the middle;
+lyrics with no timings are the same list with nothing highlighted. The pane has
+a fixed height so the window does not change size between a track with four
+hundred lines and one with none. Set `enabled = false` under `[lyrics]` to stop
+waytify contacting lrclib at all.
 
 The queue is read only. Spotify offers no way to jump to an arbitrary position
 in it, so the rows are labels rather than buttons and no hover or pressed state

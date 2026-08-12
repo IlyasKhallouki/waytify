@@ -56,6 +56,12 @@ enum PlayerEvent {
     LibraryUnavailable,
     /// What is coming up next, as far as Spotify will say.
     Queue(Vec<waytify_ipc::Track>),
+    /// Lyrics finished downloading, or turned out not to exist. Carries the key
+    /// they were fetched for, since the track can change while a request is out.
+    Lyrics {
+        key: String,
+        lyrics: Option<waytify_ipc::Lyrics>,
+    },
     /// The Spotify Connect device list, and whether the account can control it.
     Devices {
         devices: Vec<waytify_ipc::Device>,
@@ -250,6 +256,7 @@ impl Engine {
                 if opened {
                     self.request_devices();
                     self.request_queue();
+                    self.request_lyrics();
                 }
             }
             EngineMsg::Command { command, reply } => {
@@ -360,6 +367,7 @@ impl Engine {
         }
         self.state.player = None;
         self.state.spotify.queue.clear();
+        self.state.lyrics = None;
         self.clock.set_playing(false, Instant::now());
         self.publish();
     }
@@ -383,6 +391,7 @@ impl Engine {
         self.clock.set_length(track.as_ref().and_then(|t| t.length_ms));
         self.clock.anchor(position_ms, status.is_playing(), now);
 
+        let was = self.state.track().and_then(crate::lyrics::key_for);
         if let Some(p) = &mut self.state.player {
             p.status = status;
             p.track = track;
@@ -390,10 +399,12 @@ impl Engine {
             p.shuffle = shuffle;
             p.repeat = repeat;
         }
+        self.forget_stale_lyrics(was);
         self.recompute_caps();
         self.request_artwork();
         self.request_liked();
         self.request_queue();
+        self.request_lyrics();
         self.publish();
         Ok(())
     }
@@ -416,6 +427,18 @@ impl Engine {
                 }
                 self.recompute_caps();
                 self.publish();
+            }
+            PlayerEvent::Lyrics { key, lyrics } => {
+                // The track can change while the request is out, and lyrics for
+                // the previous song scrolling against this one is worse than
+                // none at all.
+                if self.state.track().and_then(crate::lyrics::key_for) != Some(key) {
+                    return;
+                }
+                if self.state.lyrics != lyrics {
+                    self.state.lyrics = lyrics;
+                    self.publish();
+                }
             }
             PlayerEvent::Queue(queue) => {
                 // The round trip outlives the track it was asked about, so the
@@ -605,6 +628,48 @@ impl Engine {
     ///
     /// Spawned rather than awaited: a cover image is a network round trip, and
     /// blocking the loop on it would stall every other event behind it.
+    /// Drop lyrics belonging to a track that is no longer playing.
+    ///
+    /// Called after the track has been replaced, with the key it had before.
+    /// Keyed on the lyrics identity rather than the track id, so the same
+    /// recording arriving under a new id, which is what a reconnect or a switch
+    /// between players produces, keeps what was already fetched instead of
+    /// blanking and asking again.
+    fn forget_stale_lyrics(&mut self, previous: Option<String>) {
+        if self.state.lyrics.is_some()
+            && self.state.track().and_then(crate::lyrics::key_for) != previous
+        {
+            self.state.lyrics = None;
+        }
+    }
+
+    /// Fetch lyrics for the current track.
+    ///
+    /// Only with the window open. Nothing else displays them, and lrclib is a
+    /// volunteer-run service that should not be asked for something nobody is
+    /// going to read.
+    fn request_lyrics(&self) {
+        if !self.config.lyrics.enabled || self.attention != Attention::Popup {
+            return;
+        }
+        let Some(track) = self.state.track() else { return };
+        let Some(key) = crate::lyrics::key_for(track) else { return };
+
+        let track = track.clone();
+        let events = self.events_tx.clone();
+        tokio::spawn(async move {
+            match crate::lyrics::fetch(&track).await {
+                Ok(lyrics) => {
+                    let _ = events.send(PlayerEvent::Lyrics { key, lyrics }).await;
+                }
+                // A track with no lyrics is the common case and is reported as
+                // Ok(None). Reaching here means lrclib could not be asked, which
+                // is not worth putting in front of anyone.
+                Err(e) => tracing::debug!("could not fetch lyrics: {e:#}"),
+            }
+        });
+    }
+
     fn request_artwork(&self) {
         let Some(track) = self.state.track() else { return };
         if track.art_path.is_some() {
@@ -671,9 +736,11 @@ impl Engine {
                     self.state.track().map(|t| &t.id) != track.as_ref().map(|t| &t.id);
 
                 self.clock.set_length(track.as_ref().and_then(|t| t.length_ms));
+                let was = self.state.track().and_then(crate::lyrics::key_for);
                 if let Some(p) = &mut self.state.player {
                     p.track = track;
                 }
+                self.forget_stale_lyrics(was);
                 // A new track starts at zero. Waiting for the player to say so
                 // leaves the old position on screen for a visible moment.
                 if changed_track {
@@ -714,6 +781,7 @@ impl Engine {
             self.request_artwork();
             self.request_liked();
             self.request_queue();
+            self.request_lyrics();
             self.publish();
         }
     }

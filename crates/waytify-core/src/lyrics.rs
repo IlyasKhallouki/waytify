@@ -10,7 +10,7 @@
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::{Duration, SystemTime};
 use waytify_ipc::{LyricLine, Lyrics, Track, paths};
 
@@ -74,7 +74,7 @@ pub async fn fetch(track: &Track) -> Result<Option<Lyrics>> {
 /// file, or from a browser has three different ids and one set of lyrics, and
 /// the duration is part of the identity because it is what distinguishes a live
 /// take from the studio one.
-fn key_for(track: &Track) -> Option<String> {
+pub fn key_for(track: &Track) -> Option<String> {
     if track.title.trim().is_empty() {
         return None;
     }
@@ -270,11 +270,6 @@ fn parse_timestamp(tag: &str) -> Option<u64> {
     };
 
     Some((minutes * 60 + seconds) * 1000 + millis)
-}
-
-/// Where lyrics for a track are cached, for tests and for `waytify cache`.
-pub fn cache_path(track: &Track) -> Option<PathBuf> {
-    Some(paths::lyrics_cache_dir().join(format!("{}.json", key_for(track)?)))
 }
 
 #[cfg(test)]

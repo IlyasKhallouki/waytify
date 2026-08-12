@@ -255,3 +255,18 @@
   opacity: 0.5;
   font-size: 0.85rem;
 }
+
+/* Lyrics. One pane whether or not they are timed; only timed ones highlight. */
+#waytify-popup .waytify-lyrics {
+  padding: 2px 0;
+}
+
+#waytify-popup .waytify-lyrics .lyric-line {
+  opacity: 0.35;
+  transition: opacity 200ms ease;
+}
+
+#waytify-popup .waytify-lyrics .lyric-line.current {
+  opacity: 1;
+  font-weight: 600;
+}
