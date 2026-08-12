@@ -657,3 +657,85 @@ pub fn drive(ui: Rc<Ui>, popup: Rc<crate::window::Popup>, client: Rc<Client>) {
         }
     });
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use waytify_ipc::{Player, State, Status, Track};
+
+    /// One test rather than several, on purpose.
+    ///
+    /// GTK may only be used from the thread that initialised it, and the test
+    /// harness gives every test its own thread. A second test calling `init`
+    /// would be initialising a second display connection from a second thread,
+    /// which aborts the whole binary rather than failing one case.
+    ///
+    /// Nothing here is ever presented, so no window appears: this exercises the
+    /// widget tree, not the compositor. It skips where there is no display, in
+    /// the same way the D-Bus tests skip without a session bus.
+    #[test]
+    fn the_queue_shows_what_is_next_and_disappears_when_there_is_none() {
+        if gtk4::init().is_err() {
+            eprintln!("no display; skipping");
+            return;
+        }
+
+        let ui = Ui::build(Rc::new(crate::client::connect()));
+        let track = |title: &str| Track {
+            title: title.into(),
+            artists: vec!["Someone".into()],
+            ..Default::default()
+        };
+
+        let mut state = State {
+            player: Some(Player {
+                bus_name: "org.mpris.MediaPlayer2.test".into(),
+                identity: "Test".into(),
+                status: Status::Playing,
+                track: Some(track("Now")),
+                position_ms: 0,
+                shuffle: None,
+                repeat: None,
+            }),
+            ..Default::default()
+        };
+
+        ui.render(&state);
+        assert!(!ui.queue.is_visible(), "an empty queue is not a section to show");
+
+        state.spotify.queue = vec![track("First"), track("Second")];
+        ui.render(&state);
+        assert!(ui.queue.is_visible());
+        assert_eq!(rows(&ui.queue_list), vec!["First", "Second"]);
+
+        // More than fits. The window has to stay a predictable size.
+        state.spotify.queue = (0..12).map(|i| track(&format!("Track {i}"))).collect();
+        ui.render(&state);
+        assert_eq!(rows(&ui.queue_list).len(), QUEUE_ROWS);
+        assert_eq!(rows(&ui.queue_list)[0], "Track 0", "the next one comes first");
+
+        // Rendering the same queue again must not stack duplicate rows, which is
+        // what a rebuild on every frame would do a second later.
+        ui.render(&state);
+        assert_eq!(rows(&ui.queue_list).len(), QUEUE_ROWS);
+
+        state.spotify.queue.clear();
+        ui.render(&state);
+        assert!(!ui.queue.is_visible(), "the section goes away with its contents");
+    }
+
+    /// The title of each row, in order.
+    fn rows(list: &gtk4::Box) -> Vec<String> {
+        let mut titles = Vec::new();
+        let mut child = list.first_child();
+        while let Some(row) = child {
+            let title = row
+                .first_child()
+                .and_then(|w| w.downcast::<gtk4::Label>().ok())
+                .expect("every row leads with its title");
+            titles.push(title.text().to_string());
+            child = row.next_sibling();
+        }
+        titles
+    }
+}
