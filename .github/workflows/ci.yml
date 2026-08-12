@@ -57,7 +57,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libgtk-4-dev libdbus-1-dev libpulse-dev meson ninja-build \
-            libgirepository1.0-dev gobject-introspection
+            libgirepository1.0-dev gobject-introspection xvfb
 
       # Ubuntu does not package gtk4-layer-shell, and dropping this job to work
       # around that would leave the window with no CI at all. Building it takes
@@ -76,6 +76,16 @@ jobs:
 
       - name: Clippy
         run: cargo clippy --package waytify-popup --all-targets
+
+      # The window's tests build its widget tree and render state into it. GTK
+      # needs a display to initialise, and they skip without one, so a runner
+      # with no screen would pass having tested nothing. Xvfb gives them one.
+      # No window is ever presented, so this needs a display rather than a
+      # compositor, and X11 is enough.
+      - name: Test the window
+        run: xvfb-run -a cargo test --package waytify-popup
+        env:
+          GDK_BACKEND: x11
 
       - name: Build
         run: cargo build --package waytify
