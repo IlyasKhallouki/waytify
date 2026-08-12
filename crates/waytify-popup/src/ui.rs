@@ -24,6 +24,13 @@ const VOLUME_SETTLE: std::time::Duration = std::time::Duration::from_millis(60);
 /// motion event, short enough that a single click still feels immediate.
 const SEEK_SETTLE: std::time::Duration = std::time::Duration::from_millis(150);
 
+/// How often the window carries the position forward on its own.
+///
+/// The daemon publishes once a second while playing. That is often enough for a
+/// scrubber and visibly late for a lyric line, which is the one place a second
+/// of lag reads as broken rather than smooth.
+const TICK: std::time::Duration = std::time::Duration::from_millis(100);
+
 /// Height of the lyrics pane, in pixels.
 ///
 /// Fixed rather than sized to its contents, so the window is the same height on
@@ -67,6 +74,13 @@ pub struct Ui {
     /// Which line is highlighted, so a frame that does not move to a new line
     /// costs nothing.
     current_line: Cell<Option<usize>>,
+    /// Where playback was when the last frame arrived, and when that was.
+    ///
+    /// The bar cannot do this because it receives text the daemon has already
+    /// rendered. The window receives a position and a status, so between frames
+    /// it can work out where playback has got to rather than waiting to be told.
+    anchor: Cell<(u64, std::time::Instant)>,
+    playing: Cell<bool>,
     queue: gtk4::Box,
     queue_list: gtk4::Box,
     /// The queue as last rendered, so rows are rebuilt when it moves rather than
@@ -257,6 +271,8 @@ impl Ui {
             lyric_lines: std::cell::RefCell::new(Vec::new()),
             listed_lyrics: std::cell::RefCell::new(None),
             current_line: Cell::new(None),
+            anchor: Cell::new((0, std::time::Instant::now())),
+            playing: Cell::new(false),
             queue,
             queue_list,
             listed_queue: std::cell::RefCell::new(Vec::new()),
@@ -435,16 +451,12 @@ impl Ui {
         }
 
         if let Some(player) = &state.player {
+            self.anchor.set((player.position_ms, std::time::Instant::now()));
+            self.playing.set(status == Status::Playing);
             // A drag in progress is the user's intent, and the daemon's position
             // is a moment behind it. Leave both the thumb and the label alone.
             if !self.dragging.get() {
-                let length = self.length_ms.get();
-                self.elapsed.set_text(&format_time(player.position_ms));
-                self.scrubber.set_value(if length > 0 {
-                    (player.position_ms as f64 / length as f64).clamp(0.0, 1.0)
-                } else {
-                    0.0
-                });
+                self.show_position(player.position_ms);
             }
             self.elapsed.set_visible(true);
             self.shuffle.set_active(player.shuffle.unwrap_or(false));
@@ -465,7 +477,7 @@ impl Ui {
         });
 
         self.render_audio(state);
-        self.render_lyrics(state);
+        self.render_lyrics(state, self.position());
         self.render_queue(state);
 
         self.binding.set(false);
@@ -514,7 +526,47 @@ impl Ui {
         self.output.set_visible(choices > 1);
     }
 
-    fn render_lyrics(&self, state: &State) {
+    /// Where playback has got to, counting from the last frame.
+    ///
+    /// Only while playing: a paused track stays exactly where the daemon left
+    /// it, and advancing it would be inventing playback that is not happening.
+    fn position(&self) -> u64 {
+        let (anchor, at) = self.anchor.get();
+        if !self.playing.get() {
+            return anchor;
+        }
+        anchor.saturating_add(at.elapsed().as_millis() as u64)
+    }
+
+    /// Move the elapsed time and the thumb to a position.
+    fn show_position(&self, position_ms: u64) {
+        let length = self.length_ms.get();
+        self.elapsed.set_text(&format_time(position_ms));
+        self.scrubber.set_value(if length > 0 {
+            (position_ms as f64 / length as f64).clamp(0.0, 1.0)
+        } else {
+            0.0
+        });
+    }
+
+    /// Carry the window forward between frames.
+    ///
+    /// Does nothing unless it is on screen and playing, so a window sitting
+    /// hidden in the background costs one comparison every tick.
+    pub fn tick(&self) {
+        if !self.playing.get() || !self.root.is_mapped() || self.dragging.get() {
+            return;
+        }
+        let position = self.position();
+
+        self.binding.set(true);
+        self.show_position(position);
+        self.binding.set(false);
+
+        self.highlight_line(position);
+    }
+
+    fn render_lyrics(&self, state: &State, position_ms: u64) {
         let lyrics = state.lyrics.as_ref();
         self.lyrics.set_visible(lyrics.is_some());
         let Some(lyrics) = lyrics else {
@@ -527,11 +579,15 @@ impl Ui {
             self.current_line.set(None);
         }
 
-        if !lyrics.is_synced() {
-            return;
-        }
+        self.highlight_line(position_ms);
+    }
 
-        let current = lyrics.line_at(state.player.as_ref().map_or(0, |p| p.position_ms));
+    /// Move the highlight to whichever line is being sung.
+    fn highlight_line(&self, position_ms: u64) {
+        let listed = self.listed_lyrics.borrow();
+        let Some(lyrics) = listed.as_ref().filter(|l| l.is_synced()) else { return };
+
+        let current = lyrics.line_at(position_ms);
         if current == self.current_line.get() {
             return;
         }
@@ -751,6 +807,14 @@ fn format_time(ms: u64) -> String {
 
 /// Drain updates from the daemon into the widgets, on the GTK thread.
 pub fn drive(ui: Rc<Ui>, popup: Rc<crate::window::Popup>, client: Rc<Client>) {
+    // Between frames the window advances the position itself, so the elapsed
+    // time and the lyric line do not wait a second to be told.
+    let ticking = Rc::clone(&ui);
+    glib::timeout_add_local(TICK, move || {
+        ticking.tick();
+        glib::ControlFlow::Continue
+    });
+
     glib::spawn_future_local(async move {
         while let Ok(update) = client.updates.recv().await {
             match update {
@@ -842,6 +906,45 @@ mod tests {
         assert!(!ui.queue.is_visible(), "the section goes away with its contents");
 
         check_lyrics(&ui, &mut state);
+        check_the_position_carries_forward(&ui, &mut state);
+    }
+
+    /// The window advances the position itself between frames, which is what
+    /// keeps a lyric line from landing up to a second late.
+    fn check_the_position_carries_forward(ui: &Ui, state: &mut State) {
+        let player = state.player.as_mut().expect("a player");
+        player.status = Status::Playing;
+        player.position_ms = 60_000;
+        ui.render(state);
+
+        std::thread::sleep(std::time::Duration::from_millis(40));
+        let advanced = ui.position();
+        assert!(advanced >= 60_040, "playing carries forward, got {advanced}");
+        assert!(advanced < 61_000, "and only by the time that passed");
+
+        // Paused is a position, not a rate. Advancing it would be inventing
+        // playback that is not happening.
+        state.player.as_mut().unwrap().status = Status::Paused;
+        ui.render(state);
+        let held = ui.position();
+        std::thread::sleep(std::time::Duration::from_millis(40));
+        assert_eq!(ui.position(), held, "a paused track stays where it was left");
+
+        // The highlight moves on the window's own clock, with no new frame from
+        // the daemon in between.
+        state.lyrics = Some(Lyrics {
+            lines: vec![
+                LyricLine { at_ms: 10_000, text: "First".into() },
+                LyricLine { at_ms: 20_000, text: "Second".into() },
+            ],
+            plain: None,
+        });
+        state.player.as_mut().unwrap().position_ms = 10_000;
+        ui.render(state);
+        assert_eq!(highlighted(ui).as_deref(), Some("First"));
+
+        ui.highlight_line(20_500);
+        assert_eq!(highlighted(ui).as_deref(), Some("Second"), "without a state frame");
     }
 
     fn check_lyrics(ui: &Ui, state: &mut State) {
