@@ -14,6 +14,7 @@ pub mod compositor;
 pub mod config;
 pub mod engine;
 pub mod format;
+pub mod lyrics;
 pub mod metadata;
 pub mod mock;
 pub mod mpris;
