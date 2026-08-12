@@ -31,12 +31,18 @@ const SEEK_SETTLE: std::time::Duration = std::time::Duration::from_millis(150);
 /// of lag reads as broken rather than smooth.
 const TICK: std::time::Duration = std::time::Duration::from_millis(100);
 
-/// How long the lyric lines take to fade out before the next one is written in.
+/// Height of one lyric row, in pixels.
 ///
-/// The same again on the way back, so a line change costs twice this. Short
-/// enough to stay ahead of the singing, long enough to read as a change of line
-/// rather than a flicker.
-const LYRIC_FADE: std::time::Duration = std::time::Duration::from_millis(130);
+/// Fixed so that the line growing as it becomes the one being sung moves the
+/// text and not the layout, and so the slide distance is known without asking.
+const LYRIC_ROW: i32 = 28;
+
+/// How many rows are on screen. The strip holds one more, below the fold, so
+/// what slides up into view is the next line rather than a gap.
+const LYRIC_ROWS: usize = 3;
+
+/// How long a line takes to travel one row.
+const LYRIC_SLIDE: std::time::Duration = std::time::Duration::from_millis(340);
 
 /// How many upcoming tracks to list.
 ///
@@ -67,20 +73,22 @@ pub struct Ui {
     mute: gtk4::Button,
     output: gtk4::MenuButton,
     output_list: gtk4::Box,
-    lyrics: gtk4::Box,
-    /// The line before, the line being sung, and the line after. Three fixed
-    /// labels rather than one per lyric: the view is a window onto the song, so
-    /// its size does not depend on the length of it.
-    lyric_lines: [gtk4::Label; 3],
+    /// A three row window onto the song, scrolled by hand rather than by the
+    /// user. Fixed labels rather than one per lyric: the size of the view does
+    /// not depend on the length of the song.
+    lyrics: gtk4::ScrolledWindow,
+    /// Four labels for three rows. The fourth waits below the fold so that what
+    /// rises into view when the line changes is the next lyric and not a gap.
+    lyric_lines: [gtk4::Label; LYRIC_ROWS + 1],
+    /// The slide in progress, cancelled if the song moves on mid-step.
+    lyric_slide: std::cell::RefCell<Option<gtk4::TickCallbackId>>,
     /// The lyrics as last built, so the rows are rebuilt when the track changes
     /// rather than once a second.
     listed_lyrics: std::cell::RefCell<Option<waytify_ipc::Lyrics>>,
     /// Which line is highlighted, so a frame that does not move to a new line
     /// costs nothing.
     current_line: Cell<Option<usize>>,
-    /// The fade that is part way through, so a run of quick changes does not
-    /// leave several of them fighting over the same three labels.
-    lyric_fade: Rc<std::cell::RefCell<Option<glib::SourceId>>>,
+
     /// Where playback was when the last frame arrived, and when that was.
     ///
     /// The bar cannot do this because it receives text the daemon has already
@@ -238,13 +246,24 @@ impl Ui {
         volume_row.append(&volume);
         volume_row.append(&output);
 
-        let lyrics = gtk4::Box::new(gtk4::Orientation::Vertical, 2);
+        // A scrolled window with no scrollbar and no user scrolling, driven
+        // entirely by the position clock. Scrolling is what makes the line
+        // being sung arrive from below and the last one leave upwards, which
+        // no amount of rewriting three labels in place can imitate.
+        let lyrics = gtk4::ScrolledWindow::new();
         lyrics.add_css_class("waytify-lyrics");
-        let lyric_lines = [lyric_label(), lyric_label(), lyric_label()];
+        lyrics.set_policy(gtk4::PolicyType::Never, gtk4::PolicyType::External);
+        lyrics.set_min_content_height(LYRIC_ROW * LYRIC_ROWS as i32);
+        lyrics.set_max_content_height(LYRIC_ROW * LYRIC_ROWS as i32);
+
+        let strip = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        let lyric_lines: [gtk4::Label; LYRIC_ROWS + 1] = std::array::from_fn(|_| lyric_label());
+        // The middle of the three visible rows is the one being sung.
         lyric_lines[1].add_css_class("current");
         for line in &lyric_lines {
-            lyrics.append(line);
+            strip.append(line);
         }
+        lyrics.set_child(Some(&strip));
 
         // Read only. Spotify has no endpoint for jumping to an arbitrary queue
         // position, so these rows are labels rather than buttons: a row that
@@ -275,17 +294,20 @@ impl Ui {
         heading.append(&chevron);
         queue_toggle.set_child(Some(&heading));
 
+        // Plain visibility rather than a GtkRevealer. A revealer only shrinks
+        // its measurement for the slide transitions; with None or Crossfade it
+        // reports the child's full height whether revealed or not, so closing
+        // the list gave none of the window's height back. Slide would collapse
+        // it, at the cost of the animation that was the complaint in the first
+        // place. Hiding does both: instant, and the space actually returns.
         let queue_list = gtk4::Box::new(gtk4::Orientation::Vertical, 2);
-        let queue_reveal = gtk4::Revealer::new();
-        queue_reveal.set_transition_type(gtk4::RevealerTransitionType::Crossfade);
-        queue_reveal.set_transition_duration(160);
-        queue_reveal.set_child(Some(&queue_list));
+        queue_list.set_visible(false);
 
         {
-            let reveal = queue_reveal.clone();
+            let list = queue_list.clone();
             let chevron = chevron.clone();
             queue_toggle.connect_toggled(move |t| {
-                reveal.set_reveal_child(t.is_active());
+                list.set_visible(t.is_active());
                 chevron.set_icon_name(Some(if t.is_active() {
                     "pan-down-symbolic"
                 } else {
@@ -295,7 +317,7 @@ impl Ui {
         }
 
         queue.append(&queue_toggle);
-        queue.append(&queue_reveal);
+        queue.append(&queue_list);
 
         root.append(&header);
         root.append(&scrub_row);
@@ -328,7 +350,7 @@ impl Ui {
             lyric_lines,
             listed_lyrics: std::cell::RefCell::new(None),
             current_line: Cell::new(None),
-            lyric_fade: Rc::new(std::cell::RefCell::new(None)),
+            lyric_slide: std::cell::RefCell::new(None),
             anchor: Cell::new((0, std::time::Instant::now())),
             playing: Cell::new(false),
             queue,
@@ -672,7 +694,9 @@ impl Ui {
         *self.listed_lyrics.borrow_mut() = Some(lyrics.clone());
         let current = lyrics.line_at(position_ms);
         self.current_line.set(current);
-        self.show_lines(lyrics, current);
+        // A new song does not step from the old one, whatever the indices say.
+        self.write_lines(lyrics, current);
+        self.lyrics.vadjustment().set_value(0.0);
     }
 
     /// Move the view to whichever line is being sung.
@@ -681,54 +705,96 @@ impl Ui {
         let Some(lyrics) = listed.as_ref() else { return };
 
         let current = lyrics.line_at(position_ms);
-        if current == self.current_line.get() {
+        let previous = self.current_line.get();
+        if current == previous {
             return;
         }
         self.current_line.set(current);
-        self.show_lines(lyrics, current);
+        self.show_lines(lyrics, current, previous);
     }
 
-    /// Write the line being sung and its neighbours into the three labels.
+    /// Move the view to a new line.
     ///
-    /// `current` is `None` through the intro, before the first line has been
-    /// reached. The line that is coming still shows, one slot down, which is
-    /// what makes the wait look intentional rather than broken.
-    fn show_lines(&self, lyrics: &waytify_ipc::Lyrics, current: Option<usize>) {
-        let at = |index: Option<usize>| {
-            index.and_then(|i| lyrics.lines.get(i)).map(|l| l.text.clone()).unwrap_or_default()
-        };
-
-        let (previous, singing, next) = match current {
-            Some(i) => (i.checked_sub(1), Some(i), Some(i + 1)),
-            None => (None, None, Some(0)),
-        };
-        let texts = [at(previous), at(singing), at(next)];
-
-        // Fade the three labels down, swap the words while they cannot be read,
-        // and let the stylesheet bring them back. Swapping text under a reader's
-        // eye is the one thing that makes synced lyrics feel mechanical.
-        //
-        // A fade already running is cancelled rather than left to finish: its
-        // callback would clear the class part way through this one and show a
-        // flash of the old line at full brightness.
-        if let Some(pending) = self.lyric_fade.borrow_mut().take() {
-            pending.remove();
+    /// A step of exactly one row is animated, because that is what the song
+    /// doing what songs do looks like: the line that was being sung leaves
+    /// upwards while the next one rises into the middle and takes the weight.
+    /// Anything else, a seek or a new track, is not a step and is written
+    /// straight in. Sliding four lines in 340ms would be a blur, and sliding
+    /// backwards would be a lie about what happened.
+    ///
+    /// `previous` and `current` are indices into the lyrics, with the intro
+    /// counting as the row before the first, so the first line arrives by
+    /// sliding like every line after it.
+    fn show_lines(
+        &self,
+        lyrics: &waytify_ipc::Lyrics,
+        current: Option<usize>,
+        previous: Option<usize>,
+    ) {
+        if let Some(running) = self.lyric_slide.borrow_mut().take() {
+            running.remove();
         }
-        self.lyrics.add_css_class("stepping");
 
-        let container = self.lyrics.clone();
+        let row_of = |line: Option<usize>| line.map_or(-1i64, |i| i as i64);
+        let stepped = row_of(current) == row_of(previous) + 1;
+
+        // A tick callback only runs while the widget is on screen, so animating
+        // a hidden window would start a slide that never finishes and leave the
+        // words a line behind and the weight on the wrong row. State frames
+        // still arrive while the window is hidden, so this is the normal case
+        // rather than an edge one.
+        if !stepped || !self.lyrics.is_mapped() {
+            self.write_lines(lyrics, current);
+            self.lyrics.vadjustment().set_value(0.0);
+            return;
+        }
+
+        // Hand the weight over before the movement starts, so the line grows
+        // into being the current one on the way up rather than on arrival.
+        self.lyric_lines[1].remove_css_class("current");
+        self.lyric_lines[2].add_css_class("current");
+
+        let ui_lyrics = lyrics.clone();
+        let pane = self.lyrics.clone();
         let labels = self.lyric_lines.clone();
-        let slot = Rc::clone(&self.lyric_fade);
-        let id = glib::timeout_add_local_once(LYRIC_FADE, move || {
-            for (label, text) in labels.iter().zip(&texts) {
-                label.set_text(text);
+        let started: Cell<Option<i64>> = Cell::new(None);
+        let distance = f64::from(LYRIC_ROW);
+
+        let id = self.lyrics.add_tick_callback(move |_, clock| {
+            let now = clock.frame_time();
+            let began = match started.get() {
+                Some(t) => t,
+                None => {
+                    started.set(Some(now));
+                    now
+                }
+            };
+
+            let elapsed = (now - began) as f64 / LYRIC_SLIDE.as_micros() as f64;
+            let progress = elapsed.clamp(0.0, 1.0);
+            // Fast away, gentle into place, which is how a line that is being
+            // handed over reads rather than a panel that is scrolling.
+            let eased = 1.0 - (1.0 - progress).powi(3);
+            pane.vadjustment().set_value(distance * eased);
+
+            if progress < 1.0 {
+                return glib::ControlFlow::Continue;
             }
-            container.remove_css_class("stepping");
-            // The source has run, so the handle left behind is stale and must
-            // not be removed later by the next change.
-            slot.borrow_mut().take();
+
+            // Rewrite one line further on and jump back to the top. The words
+            // land exactly where they already are, so there is nothing to see.
+            labels[2].remove_css_class("current");
+            labels[1].add_css_class("current");
+            write_into(&labels, &ui_lyrics, current);
+            pane.vadjustment().set_value(0.0);
+            glib::ControlFlow::Break
         });
-        *self.lyric_fade.borrow_mut() = Some(id);
+        *self.lyric_slide.borrow_mut() = Some(id);
+    }
+
+    /// Put the lines around `current` into the labels, with no movement.
+    fn write_lines(&self, lyrics: &waytify_ipc::Lyrics, current: Option<usize>) {
+        write_into(&self.lyric_lines, lyrics, current);
     }
 
     fn render_queue(&self, state: &State) {
@@ -855,11 +921,46 @@ impl Ui {
     }
 }
 
-/// One slot in the three line lyric view.
+/// One row of the lyric strip.
 ///
 /// A fixed height whatever it holds, including nothing: the labels are written
 /// to on every line change, and a window that grew and shrank by a line as the
 /// song moved would be unusable.
+/// Fill the strip with the lines around `current`.
+///
+/// The row above the one being sung, the one being sung, and the two below.
+/// Indices outside the song leave a slot empty, which is what the intro and the
+/// last line look like.
+fn write_into(
+    labels: &[gtk4::Label; LYRIC_ROWS + 1],
+    lyrics: &waytify_ipc::Lyrics,
+    current: Option<usize>,
+) {
+    for (label, text) in labels.iter().zip(lines_around(lyrics, current)) {
+        label.set_text(text);
+    }
+}
+
+/// The rows of the strip for a given line: the one before, the one being sung,
+/// and the two after.
+///
+/// Separate from the widgets so it can be tested without a display, and because
+/// the interesting part is the arithmetic rather than the setting of text.
+///
+/// `None` is the intro and counts as the row before the first line, which is
+/// what lets the first line arrive by sliding like every line after it. Indices
+/// outside the song give empty rows rather than wrapping.
+fn lines_around(lyrics: &waytify_ipc::Lyrics, current: Option<usize>) -> [&str; LYRIC_ROWS + 1] {
+    let centre = current.map_or(-1i64, |i| i as i64);
+    std::array::from_fn(|offset| {
+        usize::try_from(centre - 1 + offset as i64)
+            .ok()
+            .and_then(|i| lyrics.lines.get(i))
+            .map(|l| l.text.as_str())
+            .unwrap_or_default()
+    })
+}
+
 fn lyric_label() -> gtk4::Label {
     let l = label("lyric-line");
     l.set_xalign(0.5);
@@ -867,7 +968,7 @@ fn lyric_label() -> gtk4::Label {
     l.set_max_width_chars(34);
     // Keeps the row occupying its space through instrumental breaks, which are
     // timed blank lines rather than gaps in the data.
-    l.set_height_request(22);
+    l.set_height_request(LYRIC_ROW);
     l
 }
 
@@ -977,6 +1078,32 @@ mod tests {
     /// widget tree, not the compositor. It skips where there is no display, in
     /// the same way the D-Bus tests skip without a session bus.
     #[test]
+    fn the_strip_holds_the_line_being_sung_and_its_neighbours() {
+        // No widgets, so this runs without a display and cannot be the second
+        // test in this binary to initialise GTK.
+        let lyrics = Lyrics {
+            lines: (0..4)
+                .map(|i| LyricLine { at_ms: i * 1000, text: format!("line {i}") })
+                .collect(),
+        };
+
+        // The intro sits one row before the first line, which is what lets the
+        // first line arrive by sliding like every line after it.
+        assert_eq!(lines_around(&lyrics, None), ["", "", "line 0", "line 1"]);
+        assert_eq!(lines_around(&lyrics, Some(0)), ["", "line 0", "line 1", "line 2"]);
+        assert_eq!(lines_around(&lyrics, Some(2)), ["line 1", "line 2", "line 3", ""]);
+        // Past the end leaves empty rows rather than wrapping to the top.
+        assert_eq!(lines_around(&lyrics, Some(3)), ["line 2", "line 3", "", ""]);
+
+        // Every step moves the window by exactly one row, which is the whole
+        // reason a slide of one row lands where the next frame would have drawn
+        // it anyway.
+        let before = lines_around(&lyrics, Some(1));
+        let after = lines_around(&lyrics, Some(2));
+        assert_eq!(before[1..], after[..LYRIC_ROWS]);
+    }
+
+    #[test]
     fn the_window_renders_state_into_its_widgets() {
         if gtk4::init().is_err() {
             eprintln!("no display; skipping");
@@ -1011,11 +1138,16 @@ mod tests {
         assert!(ui.queue.is_visible());
         assert!(!ui.queue_toggle.is_active(), "closed until asked for");
 
-        // Opening is ours to animate, so the rows have to actually be revealed
-        // by the toggle rather than by a widget doing it for us.
+        // Closing has to give the height back, which is the whole point of it
+        // being closed. A GtkRevealer looks like it does this and does not: it
+        // reports its child's full height unless the transition is a slide.
+        let height = |ui: &Ui| ui.root.measure(gtk4::Orientation::Vertical, -1).1;
+        let shut = height(&ui);
         ui.queue_toggle.set_active(true);
-        assert!(ui.queue_list.parent().and_downcast::<gtk4::Revealer>().unwrap().reveals_child());
+        let open = height(&ui);
+        assert!(open > shut, "opening makes the window taller: {shut} then {open}");
         ui.queue_toggle.set_active(false);
+        assert_eq!(height(&ui), shut, "and closing gives every pixel back");
         assert_eq!(rows(&ui.queue_list), vec!["First", "Second"]);
 
         // More than fits. The window has to stay a predictable size.
@@ -1243,14 +1375,17 @@ mod tests {
         assert!(!ui.lyrics.is_visible());
     }
 
-    /// What the three lyric slots read, top to bottom, once the fade has run.
+    /// The three visible rows, top to bottom, once any slide has finished.
     ///
-    /// The words are written part way through a fade rather than immediately,
-    /// so reading the labels straight after a render sees the previous line.
+    /// A step of one line is animated and the labels are only rewritten when it
+    /// lands, so reading them straight after a render sees the line before.
     /// Pumping the loop is what a running window does between frames.
+    ///
+    /// The strip holds a fourth row below the fold, which is what rises into
+    /// view during a slide and is not part of what anyone can read.
     fn shown(ui: &Ui) -> [String; 3] {
         let context = glib::MainContext::default();
-        let deadline = std::time::Instant::now() + LYRIC_FADE * 3;
+        let deadline = std::time::Instant::now() + LYRIC_SLIDE * 3;
         while std::time::Instant::now() < deadline {
             context.iteration(false);
             std::thread::sleep(std::time::Duration::from_millis(4));

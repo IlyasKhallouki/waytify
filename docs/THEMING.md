@@ -69,9 +69,8 @@ anything, and the window does not even need to be closed.
     │   ├── .mute                   gains .muted when muted
     │   ├── .volume-slider          a GtkScale
     │   └── .output                 device picker, shown when Spotify is connected
-    ├── .waytify-lyrics            three lines, hidden when there are none
+    ├── .waytify-lyrics            a three row strip, hidden when there are none
     │   └── .lyric-line             the middle one carries .current
-    │                               .stepping on the parent while lines swap
     ├── .waytify-transport
     │   ├── .shuffle                a GtkToggleButton, so :checked applies
     │   ├── .prev
@@ -98,11 +97,21 @@ anything, and the window does not even need to be closed.
 └── .outputs-refresh
 ```
 
-When the line changes, waytify sets `.stepping` on `.waytify-lyrics`, writes the
-new words part way through, and clears it. A stylesheet turns that into a fade
-by giving `.lyric-line` a transition on `opacity` and setting `opacity: 0` under
-`.stepping`. Keep the transition at about 130ms: a slower one is still part way
-out when the words are swapped, which is the flicker the fade exists to avoid.
+Lyrics scroll. The strip is four rows tall behind a three row window, and a line
+change scrolls it up by exactly one over 340ms, so the line that was being sung
+leaves upwards while the next rises into the middle. The fourth row is what
+rises into view, which is why it is a lyric rather than a gap.
+
+`.current` moves to the incoming line when the movement starts rather than when
+it lands, so give `.lyric-line` transitions on `color`, `font-size` and
+`text-shadow` and the line will grow and light up on its way into the middle.
+Give it a fixed height, or a growing font moves the layout rather than the
+words.
+
+Nothing scrolls when the window is hidden or when the change was not a step of
+one line. A seek or a new track is written straight in, because sliding four
+lines in a third of a second is a blur and sliding backwards is a lie about
+what happened.
 
 Repeat carries exactly one of `.off`, `.all` and `.one`, matching the three
 states the Spotify client cycles through. `.one` also asks for the

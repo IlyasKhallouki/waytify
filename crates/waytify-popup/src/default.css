@@ -259,11 +259,11 @@
 
 
 /* Lyrics: the line being sung between the one before and the one after. */
+/* The line being sung takes on weight as it rises into the middle, so the
+ * transitions here run while the strip is scrolling. */
 #waytify-popup .waytify-lyrics .lyric-line {
   opacity: 0.3;
-  /* Matches the fade the window applies when the line changes. A slower
-   * transition here would still be part way out when the words are swapped. */
-  transition: opacity 130ms ease;
+  transition: opacity 340ms ease, font-size 340ms ease, font-weight 340ms ease;
 }
 
 #waytify-popup .waytify-lyrics .lyric-line.current {
@@ -271,12 +271,6 @@
   font-weight: 600;
 }
 
-/* Set while the words are being swapped, so a line change is a fade rather
- * than text changing under your eye. */
-#waytify-popup .waytify-lyrics.stepping .lyric-line,
-#waytify-popup .waytify-lyrics.stepping .lyric-line.current {
-  opacity: 0;
-}
 
 /* Up next, closed until asked for. */
 #waytify-popup .waytify-queue .queue-heading {

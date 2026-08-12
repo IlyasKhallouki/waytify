@@ -281,7 +281,6 @@
 
 .waytify-lyrics {
   margin: 10px 0 4px 0;
-  padding: 8px 0;
   border-top: 1px solid alpha(@ink, 0.07);
   border-bottom: 1px solid alpha(@ink, 0.07);
 }
@@ -289,13 +288,17 @@
 .waytify-lyrics .lyric-line {
   font-size: 13px;
   color: alpha(@ink, 0.28);
-  /* opacity is what the fade between lines animates, and it has to match the
-   * window's timing or the words are swapped while still half visible. */
-  transition: opacity 130ms ease, color 320ms ease, text-shadow 320ms ease;
+  font-size: 12px;
+  /* These run while the strip scrolls, so the line grows and lights up on the
+   * way into the middle rather than the moment it arrives. */
+  transition:
+    color 340ms ease,
+    font-size 340ms ease,
+    text-shadow 340ms ease;
 }
 
 .waytify-lyrics .lyric-line.current {
-  font-size: 15px;
+  font-size: 16px;
   font-weight: 700;
   color: @ink;
   text-shadow:
@@ -303,13 +306,6 @@
     0 0 34px alpha(@pink, 0.35);
 }
 
-/* Set while the words are swapped, so the line changes as a fade rather than
- * text jumping under your eye. */
-.waytify-lyrics.stepping .lyric-line,
-.waytify-lyrics.stepping .lyric-line.current {
-  opacity: 0;
-  text-shadow: none;
-}
 
 /* ----------------------------------------------------------------- up next */
 
