@@ -108,6 +108,12 @@ it lands, so give `.lyric-line` transitions on `color`, `font-size` and
 Give it a fixed height, or a growing font moves the layout rather than the
 words.
 
+Nothing changes class when the movement finishes. The labels rotate, so the
+line that grew on the way up is still the one in the middle and is already
+styled. That is deliberate: restyling on arrival makes your transitions run a
+second time, after the movement has stopped, which reads as the new line fading
+in once it is already there.
+
 Nothing scrolls when the window is hidden or when the change was not a step of
 one line. A seek or a new track is written straight in, because sliding four
 lines in a third of a second is a blur and sliding backwards is a lie about

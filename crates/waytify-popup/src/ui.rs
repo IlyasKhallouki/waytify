@@ -79,7 +79,21 @@ pub struct Ui {
     lyrics: gtk4::ScrolledWindow,
     /// Four labels for three rows. The fourth waits below the fold so that what
     /// rises into view when the line changes is the next lyric and not a gap.
+    ///
+    /// Fixed identities in a rotating order: see [`Ui::lyric_head`].
     lyric_lines: [gtk4::Label; LYRIC_ROWS + 1],
+    /// The strip the labels sit in, so the top one can be moved to the bottom.
+    lyric_strip: gtk4::Box,
+    /// Which label is currently the top row.
+    ///
+    /// A step moves the top label to the bottom rather than rewriting all four
+    /// and moving the styling back. The label that rose into the middle during
+    /// the slide is already the bright one, so after the rotation nothing
+    /// changes style at all. Rewriting instead meant re-adding `.current` to a
+    /// label that had just finished transitioning away from it, which the
+    /// stylesheet then faded in over a third of a second, after the movement
+    /// had already finished.
+    lyric_head: Rc<Cell<usize>>,
     /// The slide in progress, cancelled if the song moves on mid-step.
     lyric_slide: std::cell::RefCell<Option<gtk4::TickCallbackId>>,
     /// The lyrics as last built, so the rows are rebuilt when the track changes
@@ -264,6 +278,7 @@ impl Ui {
             strip.append(line);
         }
         lyrics.set_child(Some(&strip));
+        let lyric_strip = strip;
 
         // Read only. Spotify has no endpoint for jumping to an arbitrary queue
         // position, so these rows are labels rather than buttons: a row that
@@ -348,6 +363,8 @@ impl Ui {
             output_list,
             lyrics,
             lyric_lines,
+            lyric_strip,
+            lyric_head: Rc::new(Cell::new(0)),
             listed_lyrics: std::cell::RefCell::new(None),
             current_line: Cell::new(None),
             lyric_slide: std::cell::RefCell::new(None),
@@ -751,13 +768,12 @@ impl Ui {
 
         // Hand the weight over before the movement starts, so the line grows
         // into being the current one on the way up rather than on arrival.
-        self.lyric_lines[1].remove_css_class("current");
-        self.lyric_lines[2].add_css_class("current");
+        self.row(1).remove_css_class("current");
+        self.row(2).add_css_class("current");
 
-        let ui_lyrics = lyrics.clone();
         let pane = self.lyrics.clone();
-        let labels = self.lyric_lines.clone();
         let started: Cell<Option<i64>> = Cell::new(None);
+        let finish = self.finisher(lyrics.clone(), current);
         let distance = f64::from(LYRIC_ROW);
 
         let id = self.lyrics.add_tick_callback(move |_, clock| {
@@ -781,20 +797,62 @@ impl Ui {
                 return glib::ControlFlow::Continue;
             }
 
-            // Rewrite one line further on and jump back to the top. The words
-            // land exactly where they already are, so there is nothing to see.
-            labels[2].remove_css_class("current");
-            labels[1].add_css_class("current");
-            write_into(&labels, &ui_lyrics, current);
-            pane.vadjustment().set_value(0.0);
+            // Everything lands exactly where it already appears to be, so there
+            // is nothing to see and, importantly, nothing to animate.
+            finish();
             glib::ControlFlow::Break
         });
         *self.lyric_slide.borrow_mut() = Some(id);
     }
 
-    /// Put the lines around `current` into the labels, with no movement.
+    /// The label showing a given row, top to bottom.
+    fn row(&self, position: usize) -> &gtk4::Label {
+        &self.lyric_lines[(self.lyric_head.get() + position) % self.lyric_lines.len()]
+    }
+
+    /// Put the lines around `current` into the rows, with no movement.
     fn write_lines(&self, lyrics: &waytify_ipc::Lyrics, current: Option<usize>) {
-        write_into(&self.lyric_lines, lyrics, current);
+        for (position, text) in lines_around(lyrics, current).into_iter().enumerate() {
+            self.row(position).set_text(text);
+        }
+        // The middle row is the one being sung, whichever label is there now.
+        for position in 0..self.lyric_lines.len() {
+            if position == 1 {
+                self.row(position).add_css_class("current");
+            } else {
+                self.row(position).remove_css_class("current");
+            }
+        }
+    }
+
+    /// What to run when a step finishes: move the top row to the bottom.
+    ///
+    /// The strip ends up back where it started with every line one place
+    /// higher, and crucially the label that grew into the middle during the
+    /// slide is still the one in the middle, still styled, with nothing left to
+    /// animate. Rewriting the labels instead meant putting `.current` back on a
+    /// label that had just finished transitioning away from it, which the
+    /// stylesheet then faded in over a third of a second, after the movement
+    /// had already stopped.
+    ///
+    /// Owned rather than borrowed because it outlives the call that builds it.
+    fn finisher(&self, lyrics: waytify_ipc::Lyrics, current: Option<usize>) -> impl Fn() + 'static {
+        let rows = self.lyric_lines.clone();
+        let strip = self.lyric_strip.clone();
+        let head = Rc::clone(&self.lyric_head);
+        let pane = self.lyrics.clone();
+
+        move || {
+            let last = rows.len() - 1;
+            let top = rows[head.get() % rows.len()].clone();
+            let bottom = rows[(head.get() + last) % rows.len()].clone();
+            strip.reorder_child_after(&top, Some(&bottom));
+            head.set((head.get() + 1) % rows.len());
+
+            // Only the row that has just come round from the top is new.
+            top.set_text(lines_around(&lyrics, current)[last]);
+            pane.vadjustment().set_value(0.0);
+        }
     }
 
     fn render_queue(&self, state: &State) {
@@ -931,16 +989,6 @@ impl Ui {
 /// The row above the one being sung, the one being sung, and the two below.
 /// Indices outside the song leave a slot empty, which is what the intro and the
 /// last line look like.
-fn write_into(
-    labels: &[gtk4::Label; LYRIC_ROWS + 1],
-    lyrics: &waytify_ipc::Lyrics,
-    current: Option<usize>,
-) {
-    for (label, text) in labels.iter().zip(lines_around(lyrics, current)) {
-        label.set_text(text);
-    }
-}
-
 /// The rows of the strip for a given line: the one before, the one being sung,
 /// and the two after.
 ///
@@ -1169,6 +1217,7 @@ mod tests {
 
         check_stylesheets();
         check_repeat(&ui);
+        check_a_step_rotates_rather_than_restyling(&ui);
         check_art_colors_cross_providers(&ui);
         check_lyrics(&ui, &mut state);
         check_the_position_carries_forward(&ui, &mut state);
@@ -1375,7 +1424,41 @@ mod tests {
         assert!(!ui.lyrics.is_visible());
     }
 
+    /// A completed step leaves the strip rotated, not rewritten.
+    ///
+    /// This is the difference between the movement finishing and the movement
+    /// finishing followed by the new line fading in, which is what rewriting
+    /// caused: the label put back into the middle had just transitioned away
+    /// from being the current one and animated all the way back.
+    fn check_a_step_rotates_rather_than_restyling(ui: &Ui) {
+        let lyrics = Lyrics {
+            lines: (0..5)
+                .map(|i| LyricLine { at_ms: i * 1000, text: format!("line {i}") })
+                .collect(),
+        };
+
+        ui.write_lines(&lyrics, Some(1));
+        let middle = ui.row(1).clone();
+        assert!(middle.has_css_class("current"));
+
+        // What a slide does on the way up, then what it does when it lands.
+        let rising = ui.row(2).clone();
+        ui.row(1).remove_css_class("current");
+        ui.row(2).add_css_class("current");
+        ui.finisher(lyrics.clone(), Some(2))();
+
+        assert_eq!(ui.row(1), &rising, "the line that rose is the one in the middle");
+        assert!(ui.row(1).has_css_class("current"), "and was already styled before it landed");
+        assert_eq!(ui.row(1).text(), "line 2");
+        assert_eq!(ui.row(0).text(), "line 1", "the line that was being sung is above it");
+        assert_eq!(ui.row(3).text(), "line 4", "and a new line waits below the fold");
+        assert!(!middle.has_css_class("current"), "the one that left is no longer the current");
+    }
+
     /// The three visible rows, top to bottom, once any slide has finished.
+    ///
+    /// Read through `row`, since the labels rotate rather than being rewritten,
+    /// so their position in the array is not their position on screen.
     ///
     /// A step of one line is animated and the labels are only rewritten when it
     /// lands, so reading them straight after a render sees the line before.
@@ -1390,7 +1473,7 @@ mod tests {
             context.iteration(false);
             std::thread::sleep(std::time::Duration::from_millis(4));
         }
-        std::array::from_fn(|i| ui.lyric_lines[i].text().to_string())
+        std::array::from_fn(|i| ui.row(i).text().to_string())
     }
 
     /// The title of each row, in order.
