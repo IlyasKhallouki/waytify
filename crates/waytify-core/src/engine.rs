@@ -843,8 +843,6 @@ impl Engine {
             } else {
                 VolumeRoute::Unavailable
             },
-            sinks: snapshot.sinks,
-            active_sink: snapshot.active_sink,
         };
         self.recompute_caps();
         self.publish();
@@ -961,9 +959,7 @@ impl Engine {
             Command::ToggleMute => {
                 self.audio_request(|owner| crate::audio::Request::ToggleMuted { owner })?
             }
-            Command::SetSink { sink_name } => self.audio_request(|owner| {
-                crate::audio::Request::MoveToSink { owner, sink: sink_name.clone() }
-            })?,
+            Command::RefreshDevices => self.request_devices(),
             Command::ToggleLike => {
                 let client = self
                     .spotify

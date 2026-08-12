@@ -12,8 +12,8 @@ pub mod paths;
 pub mod state;
 
 pub use state::{
-    ArtColors, Audio, Caps, Device, LyricLine, Lyrics, Player, Repeat, Rgb, Sink, Spotify, State,
-    Status, Track, VolumeRoute,
+    ArtColors, Audio, Caps, Device, LyricLine, Lyrics, Player, Repeat, Rgb, Spotify, State, Status,
+    Track, VolumeRoute,
 };
 
 use serde::{Deserialize, Serialize};
@@ -129,10 +129,11 @@ pub enum Command {
     TransferTo {
         device_id: String,
     },
-    /// Move the player's local audio stream to a different PipeWire sink.
-    SetSink {
-        sink_name: String,
-    },
+    /// Ask Spotify for the device list now.
+    ///
+    /// It is polled while the window is open, but a device that has just been
+    /// woken up should not need waiting for.
+    RefreshDevices,
 
     /// Show the popup if hidden, hide it if shown. `at` anchors it to the click,
     /// which is how the popup lands on whichever monitor was clicked.

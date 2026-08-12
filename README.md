@@ -152,13 +152,17 @@ bind  = SUPER, M,         exec, waytify toggle
 The window is a layer-shell surface rather than a Waybar plugin, so none of this
 depends on Waybar running.
 
-It shows lyrics when [lrclib](https://lrclib.net) has them, highlighting and
-scrolling the current line. That needs no account and no Spotify: it is looked
+It shows lyrics when [lrclib](https://lrclib.net) has them, three lines at a
+time with the line being sung in the middle. That needs no account and no Spotify: it is looked
 up from the artist, title and length of whatever is playing. Nothing is
 requested unless the window is actually on screen, and both hits and misses are
 cached.
 
-With a Spotify account connected it also lists what is playing next. That list
+With a Spotify account connected it also lists what is playing next, folded
+away until you ask for it, and lets you move playback between Connect devices.
+Spotify only reports devices with a live session, so a phone with the app closed
+will not be listed even though the Spotify app itself shows it: the app does its
+own discovery on the local network, and the Web API exposes no equivalent. That list
 is read only, since Spotify offers no way to jump to a position in a queue, and
 it appears only while a Spotify track is playing: your account still has a queue
 during a browser video, but showing it there would be describing the wrong thing.
@@ -389,8 +393,9 @@ Each stage is usable on its own.
 - [x] **The player window.** GTK4 layer-shell surface with album art, a draggable
       scrubber and transport. Three-layer CSS with hot reload, and album art
       colours exposed to stylesheets.
-- [x] **Volume and output routing.** The player's own volume rather than the
-      system's, through PipeWire, with an output device picker.
+- [x] **Volume routing.** The player's own volume rather than the system's,
+      through PipeWire when it is playing here and through Spotify when it is
+      playing somewhere else.
 - [x] **Spotify layer.** OAuth via PKCE, likes, Connect devices and playback
       transfer, and an up-next list. Optional throughout: without it you still
       have a working player.

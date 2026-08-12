@@ -38,9 +38,6 @@ struct Record {
     #[serde(default)]
     instrumental: bool,
     #[serde(default)]
-    #[serde(rename = "plainLyrics")]
-    plain_lyrics: Option<String>,
-    #[serde(default)]
     #[serde(rename = "syncedLyrics")]
     synced_lyrics: Option<String>,
 }
@@ -202,13 +199,11 @@ fn convert(record: Record) -> Option<Lyrics> {
         return None;
     }
 
+    // Only timed lyrics are usable. The window shows the line being sung between
+    // the one before and the one after, and a wall of untimed text has no line
+    // being sung to put in the middle of it.
     let lines = record.synced_lyrics.as_deref().map(parse_lrc).unwrap_or_default();
-    if !lines.is_empty() {
-        return Some(Lyrics { lines, plain: None });
-    }
-
-    let plain = record.plain_lyrics.filter(|p| !p.trim().is_empty())?;
-    Some(Lyrics { lines: Vec::new(), plain: Some(plain) })
+    (!lines.is_empty()).then_some(Lyrics { lines })
 }
 
 /// Parse LRC into timed lines, in time order.
@@ -346,7 +341,7 @@ mod tests {
 
     #[test]
     fn the_highlighted_line_follows_the_position() {
-        let lyrics = Lyrics { lines: parse_lrc("[00:10.00]A\n[00:20.00]B\n"), plain: None };
+        let lyrics = Lyrics { lines: parse_lrc("[00:10.00]A\n[00:20.00]B\n") };
         assert_eq!(lyrics.line_at(0), None, "nothing is highlighted during the intro");
         assert_eq!(lyrics.line_at(9_999), None);
         assert_eq!(lyrics.line_at(10_000), Some(0), "exactly on the line counts as reached");
@@ -360,7 +355,6 @@ mod tests {
         let record = |duration: f64| Record {
             duration: Some(duration),
             instrumental: false,
-            plain_lyrics: None,
             synced_lyrics: Some(format!("[00:01.00]{duration}")),
         };
 
@@ -380,23 +374,17 @@ mod tests {
         let record = Record {
             duration: Some(180.0),
             instrumental: true,
-            plain_lyrics: Some("should be ignored".into()),
-            synced_lyrics: None,
+            synced_lyrics: Some("[00:01.00]should be ignored".into()),
         };
         assert!(convert(record).is_none());
     }
 
     #[test]
-    fn unsynced_lyrics_are_kept_as_plain_text() {
-        let record = Record {
-            duration: Some(180.0),
-            instrumental: false,
-            plain_lyrics: Some("A line\nAnother".into()),
-            synced_lyrics: None,
-        };
-        let lyrics = convert(record).unwrap();
-        assert!(!lyrics.is_synced());
-        assert_eq!(lyrics.plain.as_deref(), Some("A line\nAnother"));
+    fn lyrics_with_no_timing_are_not_kept() {
+        // Better nothing than text the window has no way to show. Carrying it
+        // would put a field in the state that nothing ever renders.
+        let record = Record { duration: Some(180.0), instrumental: false, synced_lyrics: None };
+        assert!(convert(record).is_none());
     }
 
     /// Hits the real service, so it is not part of the normal run.
@@ -412,8 +400,7 @@ mod tests {
     #[ignore = "needs the network"]
     async fn lrclib_still_answers_the_way_this_expects() {
         let found = lookup(&track("Digital Love", "Daft Punk", 301)).await.unwrap();
-        let lyrics = found.expect("a track this well known has lyrics");
-        assert!(lyrics.is_synced(), "and they are timed");
+        let lyrics = found.expect("a track this well known has timed lyrics");
         assert!(lyrics.lines.len() > 10);
         assert!(lyrics.lines.windows(2).all(|w| w[0].at_ms <= w[1].at_ms), "in order");
 

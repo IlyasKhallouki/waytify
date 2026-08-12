@@ -24,7 +24,6 @@ use pulse::mainloop::threaded::Mainloop;
 use pulse::volume::{ChannelVolumes, Volume};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use waytify_ipc::Sink;
 
 /// How long to wait for the sound server before giving up.
 ///
@@ -83,11 +82,6 @@ pub enum Request {
     ToggleMuted {
         owner: Owner,
     },
-    /// Move the player's stream to a different output device.
-    MoveToSink {
-        owner: Owner,
-        sink: String,
-    },
     /// Re-read everything and publish, used on connect and on any server event.
     Refresh {
         owner: Owner,
@@ -128,9 +122,6 @@ pub struct AudioSnapshot {
     /// some players and always true when playback is on a remote device.
     pub volume: Option<u8>,
     pub muted: Option<bool>,
-    pub sinks: Vec<Sink>,
-    /// The sink the player's stream is attached to.
-    pub active_sink: Option<String>,
 }
 
 /// A handle to the audio thread.
@@ -302,76 +293,16 @@ impl Worker {
                     self.context.introspect().set_sink_input_mute(input.index, !input.muted, None);
                 }
             }
-            Request::MoveToSink { owner, sink } => {
-                if let Some(input) = self.find_input(owner) {
-                    self.context.introspect().move_sink_input_by_name(input.index, sink, None);
-                }
-            }
         }
     }
 
-    /// Read the current sinks and the player's stream.
+    /// Read the player's stream.
     fn snapshot(&mut self, owner: &Owner) -> Option<AudioSnapshot> {
-        let sinks = self.list_sinks();
         let input = self.find_input(owner);
-
         Some(AudioSnapshot {
             volume: input.as_ref().map(|i| volume_to_percent(i.volume.avg())),
             muted: input.as_ref().map(|i| i.muted),
-            active_sink: input
-                .as_ref()
-                .and_then(|i| sinks.iter().find(|s| s.index == i.sink).map(|s| s.name.clone())),
-            sinks: sinks
-                .into_iter()
-                .map(|s| Sink {
-                    name: s.name,
-                    description: s.description,
-                    is_default: s.is_default,
-                    battery_percent: None,
-                })
-                .collect(),
         })
-    }
-
-    fn list_sinks(&mut self) -> Vec<SinkInfo> {
-        let collected = Arc::new(Mutex::new(Vec::new()));
-        let sink = Arc::clone(&collected);
-        let op = self.context.introspect().get_sink_info_list(move |result| {
-            if let ListResult::Item(info) = result {
-                sink.lock().unwrap().push(SinkInfo {
-                    index: info.index,
-                    name: info.name.as_deref().unwrap_or_default().to_string(),
-                    description: info.description.as_deref().unwrap_or_default().to_string(),
-                    is_default: false,
-                });
-            }
-        });
-        self.wait(op);
-
-        let mut sinks = Arc::try_unwrap(collected)
-            .map(|m| m.into_inner().unwrap())
-            .unwrap_or_else(|arc| arc.lock().unwrap().clone());
-
-        // Which sink is the default is a server property rather than something on
-        // the sinks themselves.
-        if let Some(default) = self.default_sink_name() {
-            for sink in &mut sinks {
-                sink.is_default = sink.name == default;
-            }
-        }
-        sinks
-    }
-
-    fn default_sink_name(&mut self) -> Option<String> {
-        let name = Arc::new(Mutex::new(None));
-        let sink = Arc::clone(&name);
-        let op = self.context.introspect().get_server_info(move |info| {
-            *sink.lock().unwrap() = info.default_sink_name.as_deref().map(str::to_string);
-        });
-        self.wait(op);
-        // Cloned out before the guard drops at the end of the expression.
-        let name = name.lock().unwrap();
-        name.clone()
     }
 
     /// The player's own stream, matched on the process that owns it.
@@ -395,7 +326,6 @@ impl Worker {
                 if slot.is_none() {
                     *slot = Some(InputInfo {
                         index: info.index,
-                        sink: info.sink,
                         volume: info.volume,
                         muted: info.mute,
                     });
@@ -425,17 +355,8 @@ impl Worker {
 }
 
 #[derive(Clone)]
-struct SinkInfo {
-    index: u32,
-    name: String,
-    description: String,
-    is_default: bool,
-}
-
-#[derive(Clone)]
 struct InputInfo {
     index: u32,
-    sink: u32,
     volume: ChannelVolumes,
     muted: bool,
 }
@@ -446,7 +367,6 @@ fn request_owner(request: &Request) -> &Owner {
         | Request::ChangeVolume { owner, .. }
         | Request::SetMuted { owner, .. }
         | Request::ToggleMuted { owner }
-        | Request::MoveToSink { owner, .. }
         | Request::Refresh { owner } => owner,
     }
 }
@@ -538,7 +458,6 @@ mod tests {
             Request::ChangeVolume { owner: owner.clone(), delta: -5 },
             Request::SetMuted { owner: owner.clone(), muted: true },
             Request::ToggleMuted { owner: owner.clone() },
-            Request::MoveToSink { owner: owner.clone(), sink: "x".into() },
             Request::Refresh { owner: owner.clone() },
         ];
         for request in requests {

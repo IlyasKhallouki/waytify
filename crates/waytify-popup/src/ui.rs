@@ -31,12 +31,6 @@ const SEEK_SETTLE: std::time::Duration = std::time::Duration::from_millis(150);
 /// of lag reads as broken rather than smooth.
 const TICK: std::time::Duration = std::time::Duration::from_millis(100);
 
-/// Height of the lyrics pane, in pixels.
-///
-/// Fixed rather than sized to its contents, so the window is the same height on
-/// a track with four hundred lines as on one with none.
-const LYRICS_HEIGHT: i32 = 132;
-
 /// How many upcoming tracks to list.
 ///
 /// Spotify returns up to twenty, which would make the window taller than most
@@ -63,11 +57,11 @@ pub struct Ui {
     mute: gtk4::Button,
     output: gtk4::MenuButton,
     output_list: gtk4::Box,
-    lyrics: gtk4::ScrolledWindow,
-    lyrics_list: gtk4::Box,
-    /// One label per line, so the current one can be highlighted and scrolled to
-    /// without walking the widget tree on every frame.
-    lyric_lines: std::cell::RefCell<Vec<gtk4::Label>>,
+    lyrics: gtk4::Box,
+    /// The line before, the line being sung, and the line after. Three fixed
+    /// labels rather than one per lyric: the view is a window onto the song, so
+    /// its size does not depend on the length of it.
+    lyric_lines: [gtk4::Label; 3],
     /// The lyrics as last built, so the rows are rebuilt when the track changes
     /// rather than once a second.
     listed_lyrics: std::cell::RefCell<Option<waytify_ipc::Lyrics>>,
@@ -81,14 +75,14 @@ pub struct Ui {
     /// it can work out where playback has got to rather than waiting to be told.
     anchor: Cell<(u64, std::time::Instant)>,
     playing: Cell<bool>,
-    queue: gtk4::Box,
+    queue: gtk4::Expander,
     queue_list: gtk4::Box,
     /// The queue as last rendered, so rows are rebuilt when it moves rather than
     /// on every state frame.
     listed_queue: std::cell::RefCell<Vec<waytify_ipc::Track>>,
-    /// Sinks currently listed in the picker, so the list is only rebuilt when the
-    /// set of outputs actually changes rather than on every state frame.
-    listed_sinks: std::cell::RefCell<(Vec<waytify_ipc::Sink>, Vec<waytify_ipc::Device>)>,
+    /// Devices currently listed in the picker, so it is only rebuilt when the
+    /// set changes rather than on every state frame.
+    listed_devices: std::cell::RefCell<Vec<waytify_ipc::Device>>,
     /// True while the user has hold of the scrubber. Position updates from the
     /// daemon are ignored during that time, so the thumb does not fight the
     /// pointer, and the label follows the thumb instead.
@@ -212,33 +206,41 @@ impl Ui {
         outputs.add_css_class("waytify-outputs");
         let output_list = gtk4::Box::new(gtk4::Orientation::Vertical, 2);
         outputs.set_child(Some(&output_list));
+
+        // Ask the moment it opens. The list is polled while the window is up,
+        // but somebody who has just woken a speaker should not have to wait out
+        // a poll interval to see it.
+        {
+            let client = Rc::clone(&client);
+            outputs.connect_show(move |_| client.send(Command::RefreshDevices));
+        }
         output.set_popover(Some(&outputs));
 
         volume_row.append(&mute);
         volume_row.append(&volume);
         volume_row.append(&output);
 
-        // One pane for both kinds. Timed lyrics scroll and highlight; lyrics
-        // with no timing are the same list without either, rather than a second
-        // widget that exists to show the same text.
-        let lyrics = gtk4::ScrolledWindow::new();
+        let lyrics = gtk4::Box::new(gtk4::Orientation::Vertical, 2);
         lyrics.add_css_class("waytify-lyrics");
-        lyrics.set_policy(gtk4::PolicyType::Never, gtk4::PolicyType::Automatic);
-        lyrics.set_min_content_height(LYRICS_HEIGHT);
-        lyrics.set_max_content_height(LYRICS_HEIGHT);
-        let lyrics_list = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
-        lyrics.set_child(Some(&lyrics_list));
+        let lyric_lines = [lyric_label(), lyric_label(), lyric_label()];
+        lyric_lines[1].add_css_class("current");
+        for line in &lyric_lines {
+            lyrics.append(line);
+        }
 
         // Read only. Spotify has no endpoint for jumping to an arbitrary queue
         // position, so these rows are labels rather than buttons: a row that
         // looked clickable and did nothing would be worse than one that does not.
-        let queue = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
+        //
+        // Closed to start with. It is the answer to a question you have to ask,
+        // unlike the track and the transport, and a window that opens tall
+        // enough to list five songs you did not want to see is worse than one
+        // click.
+        let queue = gtk4::Expander::new(Some("Up next"));
         queue.add_css_class("waytify-queue");
-        let queue_heading = label("queue-heading");
-        queue_heading.set_text("Up next");
+        queue.set_expanded(false);
         let queue_list = gtk4::Box::new(gtk4::Orientation::Vertical, 2);
-        queue.append(&queue_heading);
-        queue.append(&queue_list);
+        queue.set_child(Some(&queue_list));
 
         root.append(&header);
         root.append(&scrub_row);
@@ -267,8 +269,7 @@ impl Ui {
             output,
             output_list,
             lyrics,
-            lyrics_list,
-            lyric_lines: std::cell::RefCell::new(Vec::new()),
+            lyric_lines,
             listed_lyrics: std::cell::RefCell::new(None),
             current_line: Cell::new(None),
             anchor: Cell::new((0, std::time::Instant::now())),
@@ -276,7 +277,7 @@ impl Ui {
             queue,
             queue_list,
             listed_queue: std::cell::RefCell::new(Vec::new()),
-            listed_sinks: std::cell::RefCell::new((Vec::new(), Vec::new())),
+            listed_devices: std::cell::RefCell::new(Vec::new()),
             client: Rc::clone(&client),
             dragging: Rc::new(Cell::new(false)),
             length_ms: Rc::new(Cell::new(0)),
@@ -491,12 +492,17 @@ impl Ui {
     fn render_audio(&self, state: &State) {
         use waytify_ipc::VolumeRoute;
 
-        let has_outputs = !state.audio.sinks.is_empty() || !state.spotify.devices.is_empty();
+        // The picker is about which device plays, so it belongs to the account
+        // rather than to whether there is a local stream to control.
+        let can_pick = state.spotify.authorized;
         let available = state.audio.route != VolumeRoute::Unavailable;
-        self.volume_row.set_visible(available || has_outputs);
+        self.volume_row.set_visible(available || can_pick);
         self.volume.set_visible(available);
         self.mute.set_visible(available);
-        if !available && !has_outputs {
+        // Shown even with one device. It is how you find out there is only one,
+        // and how you refresh after waking another.
+        self.output.set_visible(can_pick);
+        if !available && !can_pick {
             return;
         }
 
@@ -511,19 +517,13 @@ impl Ui {
             }
         }
 
-        // Only rebuild when the set of outputs changed. State arrives once a
-        // second while playing and rebuilding a list that often would close the
-        // popover under the pointer every time.
-        let outputs_now = (state.audio.sinks.clone(), state.spotify.devices.clone());
-        if *self.listed_sinks.borrow() != outputs_now {
+        // Only rebuild when the set changed. State arrives once a second while
+        // playing, and rebuilding this that often would close the popover under
+        // the pointer every time.
+        if *self.listed_devices.borrow() != state.spotify.devices {
             self.rebuild_outputs(state);
-            *self.listed_sinks.borrow_mut() = outputs_now;
+            *self.listed_devices.borrow_mut() = state.spotify.devices.clone();
         }
-
-        // Nothing to choose between with a single local output and no remote
-        // devices to move to.
-        let choices = state.audio.sinks.len() + state.spotify.devices.len();
-        self.output.set_visible(choices > 1);
     }
 
     /// Where playback has got to, counting from the last frame.
@@ -569,64 +569,53 @@ impl Ui {
     fn render_lyrics(&self, state: &State, position_ms: u64) {
         let lyrics = state.lyrics.as_ref();
         self.lyrics.set_visible(lyrics.is_some());
-        let Some(lyrics) = lyrics else {
-            return;
-        };
+        let Some(lyrics) = lyrics else { return };
 
-        if self.listed_lyrics.borrow().as_ref() != Some(lyrics) {
-            self.rebuild_lyrics(lyrics);
-            *self.listed_lyrics.borrow_mut() = Some(lyrics.clone());
-            self.current_line.set(None);
+        if self.listed_lyrics.borrow().as_ref() == Some(lyrics) {
+            self.highlight_line(position_ms);
+            return;
         }
 
-        self.highlight_line(position_ms);
+        // A new song. The line at this position may be at the same index as the
+        // one already shown, so the text is written out rather than left to the
+        // guard in highlight_line.
+        *self.listed_lyrics.borrow_mut() = Some(lyrics.clone());
+        let current = lyrics.line_at(position_ms);
+        self.current_line.set(current);
+        self.show_lines(lyrics, current);
     }
 
-    /// Move the highlight to whichever line is being sung.
+    /// Move the view to whichever line is being sung.
     fn highlight_line(&self, position_ms: u64) {
         let listed = self.listed_lyrics.borrow();
-        let Some(lyrics) = listed.as_ref().filter(|l| l.is_synced()) else { return };
+        let Some(lyrics) = listed.as_ref() else { return };
 
         let current = lyrics.line_at(position_ms);
         if current == self.current_line.get() {
             return;
         }
-
-        let rows = self.lyric_lines.borrow();
-        if let Some(previous) = self.current_line.get().and_then(|i| rows.get(i)) {
-            previous.remove_css_class("current");
-        }
-        if let Some(row) = current.and_then(|i| rows.get(i)) {
-            row.add_css_class("current");
-            scroll_into_view(&self.lyrics, row);
-        }
         self.current_line.set(current);
+        self.show_lines(lyrics, current);
     }
 
-    fn rebuild_lyrics(&self, lyrics: &waytify_ipc::Lyrics) {
-        while let Some(child) = self.lyrics_list.first_child() {
-            self.lyrics_list.remove(&child);
-        }
-
-        let texts: Vec<&str> = if lyrics.is_synced() {
-            lyrics.lines.iter().map(|l| l.text.as_str()).collect()
-        } else {
-            lyrics.plain.as_deref().unwrap_or_default().lines().collect()
+    /// Write the line being sung and its neighbours into the three labels.
+    ///
+    /// `current` is `None` through the intro, before the first line has been
+    /// reached. The line that is coming still shows, one slot down, which is
+    /// what makes the wait look intentional rather than broken.
+    fn show_lines(&self, lyrics: &waytify_ipc::Lyrics, current: Option<usize>) {
+        let at = |index: Option<usize>| {
+            index.and_then(|i| lyrics.lines.get(i)).map(|l| l.text.as_str()).unwrap_or_default()
         };
 
-        let mut rows = Vec::with_capacity(texts.len());
-        for text in texts {
-            let row = label("lyric-line");
-            row.set_text(text);
-            // Lyrics are prose, not metadata: wrapping keeps a long line
-            // readable where the ellipsis every other label uses would eat it.
-            row.set_ellipsize(gtk4::pango::EllipsizeMode::None);
-            row.set_wrap(true);
-            row.set_max_width_chars(34);
-            self.lyrics_list.append(&row);
-            rows.push(row);
-        }
-        *self.lyric_lines.borrow_mut() = rows;
+        let (previous, singing, next) = match current {
+            Some(i) => (i.checked_sub(1), Some(i), Some(i + 1)),
+            None => (None, None, Some(0)),
+        };
+
+        self.lyric_lines[0].set_text(at(previous));
+        self.lyric_lines[1].set_text(at(singing));
+        self.lyric_lines[2].set_text(at(next));
     }
 
     fn render_queue(&self, state: &State) {
@@ -662,23 +651,44 @@ impl Ui {
         *self.listed_queue.borrow_mut() = upcoming.to_vec();
     }
 
+    /// Rebuild the Connect device list.
+    ///
+    /// Only Spotify devices. Which machine plays and which speaker on this
+    /// machine it comes out of are different questions, and listing local sinks
+    /// beside remote devices implied you were choosing between them when in fact
+    /// one contains the other.
     fn rebuild_outputs(&self, state: &State) {
         while let Some(child) = self.output_list.first_child() {
             self.output_list.remove(&child);
         }
 
+        let heading = label("outputs-heading");
+        heading.set_text("Playing on");
+        self.output_list.append(&heading);
+
         for device in &state.spotify.devices {
-            let row = gtk4::Button::with_label(&format!("{} ({})", device.name, device.kind));
+            let row = gtk4::Button::new();
             row.add_css_class("device");
-            row.add_css_class("remote");
             row.add_css_class("flat");
-            if Some(&device.id) == state.spotify.active_device.as_ref() {
+            let active = Some(&device.id) == state.spotify.active_device.as_ref();
+            if active {
                 row.add_css_class("active");
             }
+
+            let content = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
+            let name = label("device-name");
+            name.set_text(&device.name);
+            name.set_hexpand(true);
+            let kind = label("device-kind");
+            kind.set_text(&device.kind);
+            content.append(&name);
+            content.append(&kind);
+            row.set_child(Some(&content));
+
             // Transferring is a write to /me/player, so it needs Premium. A row
             // that cannot work is shown disabled rather than hidden, because its
             // absence would look like the device is not there at all.
-            row.set_sensitive(state.caps.can_transfer);
+            row.set_sensitive(state.caps.can_transfer && !active);
 
             let client = Rc::clone(&self.client);
             let id = device.id.clone();
@@ -692,25 +702,22 @@ impl Ui {
             self.output_list.append(&row);
         }
 
-        for sink in &state.audio.sinks {
-            let row = gtk4::Button::with_label(&sink.description);
-            row.add_css_class("device");
-            row.add_css_class("flat");
-            if Some(&sink.name) == state.audio.active_sink.as_ref() {
-                row.add_css_class("active");
-            }
+        // Spotify only reports devices with a live session, so a phone with the
+        // app closed is missing here while being visible in the app itself,
+        // which does its own discovery. Saying so is the difference between a
+        // limitation and a bug.
+        let hint = label("outputs-hint");
+        hint.set_text("Not seeing a device? Open Spotify on it first.");
+        hint.set_wrap(true);
+        hint.set_max_width_chars(28);
+        self.output_list.append(&hint);
 
-            let client = Rc::clone(&self.client);
-            let name = sink.name.clone();
-            let popover = self.output.popover();
-            row.connect_clicked(move |_| {
-                client.send(Command::SetSink { sink_name: name.clone() });
-                if let Some(popover) = &popover {
-                    popover.popdown();
-                }
-            });
-            self.output_list.append(&row);
-        }
+        let refresh = gtk4::Button::with_label("Refresh");
+        refresh.add_css_class("outputs-refresh");
+        refresh.add_css_class("flat");
+        let client = Rc::clone(&self.client);
+        refresh.connect_clicked(move |_| client.send(Command::RefreshDevices));
+        self.output_list.append(&refresh);
     }
 
     fn set_art(&self, path: Option<&std::path::Path>) {
@@ -728,28 +735,20 @@ impl Ui {
     }
 }
 
-/// Bring a line to the middle of the pane.
+/// One slot in the three line lyric view.
 ///
-/// Deferred to an idle callback because a row built this frame has no size yet,
-/// and scrolling to a widget whose height is still zero puts the view at the top
-/// every time.
-fn scroll_into_view(pane: &gtk4::ScrolledWindow, row: &gtk4::Label) {
-    let pane = pane.clone();
-    let row = row.clone();
-    glib::idle_add_local_once(move || {
-        let adjustment = pane.vadjustment();
-        let height = f64::from(row.height());
-        let origin = gtk4::graphene::Point::new(0.0, 0.0);
-        let Some(point) = row.compute_point(&pane, &origin) else { return };
-
-        // The point is relative to the visible area, so the scroll position the
-        // pane is already at has to be added back to get the offset within the
-        // list.
-        let top = f64::from(point.y());
-        let centre = adjustment.value() + top + height / 2.0 - adjustment.page_size() / 2.0;
-        adjustment
-            .set_value(centre.clamp(0.0, (adjustment.upper() - adjustment.page_size()).max(0.0)));
-    });
+/// A fixed height whatever it holds, including nothing: the labels are written
+/// to on every line change, and a window that grew and shrank by a line as the
+/// song moved would be unusable.
+fn lyric_label() -> gtk4::Label {
+    let l = label("lyric-line");
+    l.set_xalign(0.5);
+    l.set_wrap(false);
+    l.set_max_width_chars(34);
+    // Keeps the row occupying its space through instrumental breaks, which are
+    // timed blank lines rather than gaps in the data.
+    l.set_height_request(22);
+    l
 }
 
 fn label(class: &str) -> gtk4::Label {
@@ -890,6 +889,7 @@ mod tests {
         state.spotify.queue = vec![track("First"), track("Second")];
         ui.render(&state);
         assert!(ui.queue.is_visible());
+        assert!(!ui.queue.is_expanded(), "closed until asked for");
         assert_eq!(rows(&ui.queue_list), vec!["First", "Second"]);
 
         // More than fits. The window has to stay a predictable size.
@@ -939,14 +939,15 @@ mod tests {
                 LyricLine { at_ms: 10_000, text: "First".into() },
                 LyricLine { at_ms: 20_000, text: "Second".into() },
             ],
-            plain: None,
         });
         state.player.as_mut().unwrap().position_ms = 10_000;
         ui.render(state);
-        assert_eq!(highlighted(ui).as_deref(), Some("First"));
+        assert_eq!(shown(ui)[1], "First");
 
+        // The line moves on the window's own clock, with no new frame from the
+        // daemon in between.
         ui.highlight_line(20_500);
-        assert_eq!(highlighted(ui).as_deref(), Some("Second"), "without a state frame");
+        assert_eq!(shown(ui)[1], "Second");
     }
 
     fn check_lyrics(ui: &Ui, state: &mut State) {
@@ -963,58 +964,47 @@ mod tests {
                 LyricLine { at_ms: 20_000, text: "Second".into() },
                 LyricLine { at_ms: 30_000, text: "Third".into() },
             ],
-            plain: None,
         });
 
         position(state, 0);
         ui.render(state);
         assert!(ui.lyrics.is_visible());
-        assert_eq!(ui.lyric_lines.borrow().len(), 3);
-        assert_eq!(highlighted(ui), None, "nothing is highlighted through the intro");
+        // Through the intro there is no line being sung, but the one that is
+        // coming shows, so the wait looks intentional.
+        assert_eq!(shown(ui), ["", "", "First"]);
 
         position(state, 15_000);
         ui.render(state);
-        assert_eq!(highlighted(ui).as_deref(), Some("First"), "a line holds until the next");
+        assert_eq!(shown(ui), ["", "First", "Second"], "nothing came before the first");
 
-        position(state, 30_000);
+        position(state, 25_000);
         ui.render(state);
-        assert_eq!(highlighted(ui).as_deref(), Some("Third"));
-        assert_eq!(
-            ui.lyric_lines.borrow().iter().filter(|l| l.has_css_class("current")).count(),
-            1,
-            "the line it moved off is no longer highlighted"
-        );
+        assert_eq!(shown(ui), ["First", "Second", "Third"]);
 
-        // A second frame on the same line must not rebuild the pane, which
-        // would drop the highlight and fight the scroll position once a second.
-        let before: Vec<_> = ui.lyric_lines.borrow().clone();
+        position(state, 35_000);
         ui.render(state);
-        assert!(
-            before.iter().zip(ui.lyric_lines.borrow().iter()).all(|(a, b)| a == b),
-            "the same lyrics are not rebuilt"
-        );
-        assert_eq!(highlighted(ui).as_deref(), Some("Third"));
+        assert_eq!(shown(ui), ["Second", "Third", ""], "nothing comes after the last");
 
-        // Lyrics with no timing are the same list without a highlight, rather
-        // than a pane that stays empty because nothing can be current.
-        state.lyrics = Some(Lyrics { lines: Vec::new(), plain: Some("One\nTwo".into()) });
+        // A different song whose current line lands on the same index has to
+        // redraw anyway, which the highlight guard on its own would skip.
+        state.lyrics = Some(Lyrics {
+            lines: vec![
+                LyricLine { at_ms: 10_000, text: "Other one".into() },
+                LyricLine { at_ms: 20_000, text: "Other two".into() },
+            ],
+        });
+        position(state, 35_000);
         ui.render(state);
-        assert!(ui.lyrics.is_visible());
-        assert_eq!(ui.lyric_lines.borrow().len(), 2);
-        assert_eq!(highlighted(ui), None, "there is no current line without timings");
+        assert_eq!(shown(ui), ["Other one", "Other two", ""]);
 
         state.lyrics = None;
         ui.render(state);
         assert!(!ui.lyrics.is_visible());
     }
 
-    /// The text of the highlighted lyric line, if there is one.
-    fn highlighted(ui: &Ui) -> Option<String> {
-        ui.lyric_lines
-            .borrow()
-            .iter()
-            .find(|l| l.has_css_class("current"))
-            .map(|l| l.text().to_string())
+    /// What the three lyric slots read, top to bottom.
+    fn shown(ui: &Ui) -> [String; 3] {
+        std::array::from_fn(|i| ui.lyric_lines[i].text().to_string())
     }
 
     /// The title of each row, in order.

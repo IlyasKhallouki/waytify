@@ -180,17 +180,6 @@ pub enum VolumeRoute {
     Unavailable,
 }
 
-/// A local PipeWire sink. Bluetooth headphones show up here like any other output.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Sink {
-    pub name: String,
-    pub description: String,
-    pub is_default: bool,
-    /// Present when the sink is a Bluetooth device that reports its battery.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub battery_percent: Option<u8>,
-}
-
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Audio {
     /// 0 to 100, of whichever target `route` names.
@@ -199,17 +188,11 @@ pub struct Audio {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub muted: Option<bool>,
     pub route: VolumeRoute,
-    /// Full scope only.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub sinks: Vec<Sink>,
-    /// The sink the player's stream is currently attached to.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub active_sink: Option<String>,
 }
 
 impl Audio {
     pub fn is_empty(&self) -> bool {
-        self.volume.is_none() && self.sinks.is_empty() && self.route == VolumeRoute::Unavailable
+        self.volume.is_none() && self.route == VolumeRoute::Unavailable
     }
 }
 
@@ -293,19 +276,13 @@ pub struct LyricLine {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Lyrics {
-    /// Empty when only unsynced lyrics were found.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    /// Always timed. The window shows the line being sung and its neighbours,
+    /// which is not something lyrics without timing can be put into, so lyrics
+    /// that arrive without any are discarded rather than carried unusable.
     pub lines: Vec<LyricLine>,
-    /// Set when the source had no timing information.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub plain: Option<String>,
 }
 
 impl Lyrics {
-    pub fn is_synced(&self) -> bool {
-        !self.lines.is_empty()
-    }
-
     /// Index of the line that should be highlighted at `position_ms`.
     ///
     /// Returns `None` before the first timed line, which is the instrumental
@@ -402,7 +379,6 @@ mod tests {
                 LyricLine { at_ms: 5_000, text: "second".into() },
                 LyricLine { at_ms: 9_000, text: "third".into() },
             ],
-            plain: None,
         }
     }
 

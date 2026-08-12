@@ -256,17 +256,45 @@
   font-size: 0.85rem;
 }
 
-/* Lyrics. One pane whether or not they are timed; only timed ones highlight. */
-#waytify-popup .waytify-lyrics {
-  padding: 2px 0;
-}
 
+
+/* Lyrics: the line being sung between the one before and the one after. */
 #waytify-popup .waytify-lyrics .lyric-line {
-  opacity: 0.35;
-  transition: opacity 200ms ease;
+  opacity: 0.3;
+  transition: opacity 250ms ease;
 }
 
 #waytify-popup .waytify-lyrics .lyric-line.current {
   opacity: 1;
   font-weight: 600;
+}
+
+/* Up next, closed until asked for. */
+#waytify-popup .waytify-queue > label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  opacity: 0.55;
+}
+
+/* Which device plays, which is not the same question as which speaker. */
+.waytify-outputs .outputs-heading {
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  opacity: 0.55;
+  padding: 2px 6px 6px 6px;
+}
+
+.waytify-outputs .device-kind {
+  opacity: 0.5;
+  font-size: 0.85rem;
+}
+
+.waytify-outputs .outputs-hint {
+  font-size: 0.8rem;
+  opacity: 0.45;
+  padding: 8px 6px 4px 6px;
 }

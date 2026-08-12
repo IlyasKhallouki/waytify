@@ -68,17 +68,16 @@ anything, and the window does not even need to be closed.
     ├── .waytify-volume             hidden when there is no stream to control
     │   ├── .mute                   gains .muted when muted
     │   ├── .volume-slider          a GtkScale
-    │   └── .output                 device picker, hidden with only one output
-    ├── .waytify-lyrics            a scrolling pane, hidden when there are none
-    │   └── .lyric-line             gains .current on the line being sung
+    │   └── .output                 device picker, shown when Spotify is connected
+    ├── .waytify-lyrics            three lines, hidden when there are none
+    │   └── .lyric-line             the middle one carries .current
     ├── .waytify-transport
     │   ├── .shuffle                a GtkToggleButton, so :checked applies
     │   ├── .prev
     │   ├── .playpause
     │   ├── .next
     │   └── .repeat
-    └── .waytify-queue              hidden unless Spotify has an up-next list
-        ├── .queue-heading
+    └── .waytify-queue              a GtkExpander, closed by default
         └── .queue-track            one upcoming track, at most five
             ├── .queue-title
             └── .queue-artist
@@ -86,16 +85,21 @@ anything, and the window does not even need to be closed.
 #waytify-dismiss                    full-screen click catcher, transparent
 └── .waytify-backdrop               style this for a dimmed backdrop
 
-.waytify-outputs                    the output picker popover
-└── .device                         one output, gains .active for the current one
+.waytify-outputs                    the device picker popover
+├── .outputs-heading
+├── .device                         one Connect device, .active for the current
+│   ├── .device-name
+│   └── .device-kind
+├── .outputs-hint
+└── .outputs-refresh
 ```
 
-Lyrics come from lrclib and are shown in one pane whether or not they carry
-timings. Timed ones highlight the current line and scroll it to the middle;
-lyrics with no timings are the same list with nothing highlighted. The pane has
-a fixed height so the window does not change size between a track with four
-hundred lines and one with none. Set `enabled = false` under `[lyrics]` to stop
-waytify contacting lrclib at all.
+Lyrics come from lrclib and are shown three lines at a time: the line being
+sung, between the one before and the one after. Only timed lyrics are used, so
+the middle slot always means something. Every slot keeps its height when empty,
+which is what stops the window growing and shrinking by a line as the song
+moves. Set `enabled = false` under `[lyrics]` to stop waytify contacting lrclib
+at all.
 
 The queue is read only. Spotify offers no way to jump to an arbitrary position
 in it, so the rows are labels rather than buttons and no hover or pressed state
@@ -103,9 +107,16 @@ is defined for them. It appears only while a Spotify track is playing: the
 account still has a queue during a browser video, but showing it there would be
 describing the wrong thing.
 
+The device picker lists Spotify Connect devices only, which is the question of
+which machine plays. Which speaker on this machine the sound comes out of is a
+different question, and one your system settings already answer; listing local
+outputs beside remote devices implied you were choosing between them when in
+fact one contains the other.
+
 The volume row disappears entirely when the player has no local audio stream,
 which is normal while nothing is producing sound and always true once playback
 moves to a remote device. A slider that does nothing is worse than no slider.
+The volume slider itself follows whichever device is playing, local or remote.
 
 `#waytify-popup` also carries the same state classes as the bar module, so
 `#waytify-popup.paused` and `#waytify-popup.no-player` work. It additionally
