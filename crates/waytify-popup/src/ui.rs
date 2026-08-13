@@ -952,8 +952,11 @@ impl Ui {
         // limitation and a bug.
         let hint = label("outputs-hint");
         hint.set_text("Not seeing a device? Open Spotify on it first.");
+        // The shared helper ellipsises, which is right for a track title and
+        // wrong for a sentence: it cut this one off mid-word.
+        hint.set_ellipsize(gtk4::pango::EllipsizeMode::None);
         hint.set_wrap(true);
-        hint.set_max_width_chars(28);
+        hint.set_max_width_chars(26);
         self.output_list.append(&hint);
 
         let refresh = gtk4::Button::with_label("Refresh");
@@ -1013,7 +1016,9 @@ fn lyric_label() -> gtk4::Label {
     let l = label("lyric-line");
     l.set_xalign(0.5);
     l.set_wrap(false);
-    l.set_max_width_chars(34);
+    // Lyrics are prose and run long. This is what the window is sized around,
+    // since a line that ellipsises has lost the word the song was building to.
+    l.set_max_width_chars(42);
     // Keeps the row occupying its space through instrumental breaks, which are
     // timed blank lines rather than gaps in the data.
     l.set_height_request(LYRIC_ROW);

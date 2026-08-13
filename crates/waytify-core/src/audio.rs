@@ -43,17 +43,49 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 pub struct Owner {
     /// Short name from the MPRIS bus name, for example `spotify`.
     pub binary: String,
+    /// The player's own `Identity`, for example `Spotify`.
+    ///
+    /// Kept because some streams say who they are and nothing else. Spotify's
+    /// own client is one of them.
+    pub identity: String,
     /// The process holding the bus name, when the bus could say.
+    pub pid: Option<u32>,
+}
+
+/// What a stream says about itself.
+///
+/// Every field is optional in practice. A player may publish all of them, some
+/// of them, or, in Spotify's case, only its name.
+#[derive(Debug, Default, Clone)]
+pub struct StreamOwner {
+    pub binary: String,
+    /// `application.name`, which is a display name rather than an executable.
+    pub name: String,
     pub pid: Option<u32>,
 }
 
 impl Owner {
     /// Whether a stream belongs to this player.
-    pub fn owns(&self, stream_pid: Option<u32>, stream_binary: &str) -> bool {
-        if !stream_binary.is_empty() && stream_binary.eq_ignore_ascii_case(&self.binary) {
+    ///
+    /// Four ways, because no single one covers what players actually publish.
+    /// The executable name works for most. The process id, and any descendant
+    /// of it, catches Chrome, whose stream comes from a child process under a
+    /// different name. Neither works for Spotify's own client, whose stream
+    /// carries no process information at all: no binary, no pid, just
+    /// `application.name = "Spotify"`. Without that last case the most common
+    /// player on this desktop has no volume control, silently, because a stream
+    /// that is not found looks exactly like a player that is not making sound.
+    pub fn owns(&self, stream: &StreamOwner) -> bool {
+        if !stream.binary.is_empty() && stream.binary.eq_ignore_ascii_case(&self.binary) {
             return true;
         }
-        let (Some(stream_pid), Some(player_pid)) = (stream_pid, self.pid) else {
+        if !stream.name.is_empty()
+            && (stream.name.eq_ignore_ascii_case(&self.binary)
+                || stream.name.eq_ignore_ascii_case(&self.identity))
+        {
+            return true;
+        }
+        let (Some(stream_pid), Some(player_pid)) = (stream.pid, self.pid) else {
             return false;
         };
         stream_pid == player_pid || is_descendant(stream_pid, player_pid)
@@ -317,9 +349,10 @@ impl Worker {
         let op = self.context.introspect().get_sink_input_info_list(move |result| {
             let ListResult::Item(info) = result else { return };
             let binary = info.proplist.get_str("application.process.binary").unwrap_or_default();
+            let name = info.proplist.get_str("application.name").unwrap_or_default();
             let pid =
                 info.proplist.get_str("application.process.id").and_then(|v| v.parse::<u32>().ok());
-            if wanted.owns(pid, &binary) {
+            if wanted.owns(&StreamOwner { binary, name, pid }) {
                 let mut slot = sink.lock().unwrap();
                 // Some players hold several streams. The first is as good a
                 // choice as any and at least it is a stable one.
@@ -416,26 +449,56 @@ mod tests {
 
     #[test]
     fn a_stream_matches_its_player_by_name() {
-        let owner = Owner { binary: "spotify".into(), pid: Some(1234) };
-        assert!(owner.owns(Some(9999), "spotify"), "the name alone should be enough");
-        assert!(owner.owns(None, "Spotify"), "matching is case insensitive");
+        let owner =
+            Owner { binary: "spotify".into(), identity: "Spotify".into(), pid: Some(1234) };
+        let by_binary = |binary: &str, pid| StreamOwner {
+            binary: binary.into(),
+            name: String::new(),
+            pid,
+        };
+        assert!(owner.owns(&by_binary("spotify", Some(9999))), "the name alone should be enough");
+        assert!(owner.owns(&by_binary("Spotify", None)), "matching is case insensitive");
     }
 
     #[test]
     fn a_stream_matches_its_player_by_process() {
         // Chrome is the reason this exists: MPRIS says chromium, the stream says
         // chrome, so only the process identity connects the two.
-        let owner = Owner { binary: "chromium".into(), pid: Some(1234) };
-        assert!(owner.owns(Some(1234), "chrome"), "same process should match");
+        let owner =
+            Owner { binary: "chromium".into(), identity: "Chromium".into(), pid: Some(1234) };
+        assert!(
+            owner.owns(&StreamOwner { binary: "chrome".into(), name: String::new(), pid: Some(1234) }),
+            "same process should match"
+        );
     }
 
     #[test]
     fn an_unrelated_stream_is_not_claimed() {
-        let owner = Owner { binary: "spotify".into(), pid: Some(1234) };
-        assert!(!owner.owns(Some(5678), "firefox"));
-        assert!(!owner.owns(None, "firefox"));
+        let owner =
+            Owner { binary: "spotify".into(), identity: "Spotify".into(), pid: Some(1234) };
+        let firefox = |pid| StreamOwner { binary: "firefox".into(), name: "Firefox".into(), pid };
+        assert!(!owner.owns(&firefox(Some(5678))));
+        assert!(!owner.owns(&firefox(None)));
         // An empty binary must not match an empty configured name by accident.
-        assert!(!Owner::default().owns(None, ""));
+        assert!(!Owner::default().owns(&StreamOwner::default()));
+
+        // What Spotify's own client actually publishes: a display name and
+        // nothing else. No binary, no process id, so every other rule misses
+        // and the most common player on this desktop has no volume control.
+        let spotify_stream =
+            StreamOwner { binary: String::new(), name: "Spotify".into(), pid: None };
+        assert!(owner.owns(&spotify_stream), "matched on application.name alone");
+
+        // The identity counts as well as the bus name, since the two differ in
+        // case and sometimes in spelling.
+        let by_identity =
+            Owner { binary: "chromium".into(), identity: "Chromium".into(), pid: None };
+        let named = StreamOwner { binary: String::new(), name: "Chromium".into(), pid: None };
+        assert!(by_identity.owns(&named));
+
+        // A display name still has to be the right one.
+        let other = StreamOwner { binary: String::new(), name: "Firefox".into(), pid: None };
+        assert!(!owner.owns(&other));
     }
 
     #[test]
@@ -452,7 +515,7 @@ mod tests {
     fn requests_all_carry_the_player_they_are_about() {
         // The audio thread remembers the last player it was told about, so a
         // request that did not name one would act on whatever came before it.
-        let owner = Owner { binary: "spotify".into(), pid: Some(42) };
+        let owner = Owner { binary: "spotify".into(), identity: "Spotify".into(), pid: Some(42) };
         let requests = [
             Request::SetVolume { owner: owner.clone(), percent: 50 },
             Request::ChangeVolume { owner: owner.clone(), delta: -5 },

@@ -189,9 +189,11 @@
   background-color: @waytify_fg;
 }
 
-/* The output picker, shown only when there is more than one device. */
-.waytify-outputs {
-  padding: 4px;
+/* The device picker. A GTK popover paints its `contents` child rather than
+ * itself, so a rule on the popover leaves the platform's chrome underneath. */
+.waytify-outputs > contents {
+  padding: 8px;
+  min-width: 200px;
 }
 
 .waytify-outputs .device {
@@ -222,12 +224,6 @@
 
 #waytify-popup.liked .like {
   color: @waytify_accent;
-}
-
-/* Spotify Connect devices sit in the same picker as local outputs, since from
- * the user's side both answer "where is this playing". */
-.waytify-outputs .device.remote {
-  color: @waytify_dim;
 }
 
 .waytify-outputs .device:disabled {

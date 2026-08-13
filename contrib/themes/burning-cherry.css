@@ -42,7 +42,7 @@
   color: @ink;
   font-family: "Rubik", "Inter", sans-serif;
   font-size: 14px;
-  min-width: 340px;
+  min-width: 390px;
 
   /* A wide, low-opacity throw reads as depth under a blurred surface. The
    * inner line is what gives the edge its sheen. */
@@ -298,7 +298,7 @@
 }
 
 .waytify-lyrics .lyric-line.current {
-  font-size: 16px;
+  font-size: 15px;
   font-weight: 700;
   color: @ink;
   text-shadow:
@@ -351,12 +351,21 @@
 
 /* ----------------------------------------------------------------- devices */
 
-.waytify-outputs {
+/* A GTK popover paints its `contents` child, not itself, so styling the
+ * popover leaves the platform's own chrome on screen underneath. */
+.waytify-outputs > contents {
   background-image: linear-gradient(160deg, alpha(@base, 0.98) 0%, alpha(@base_deep, 0.99) 100%);
-  border: 1px solid alpha(@pink, 0.22);
+  border: 1px solid alpha(@pink, 0.3);
   border-radius: 14px;
-  padding: 8px;
+  padding: 10px;
   box-shadow: 0 12px 32px alpha(#000000, 0.55);
+  min-width: 220px;
+}
+
+/* The little tail pointing back at the button, which is a node of its own. */
+.waytify-outputs > arrow {
+  background-color: @base;
+  border: 1px solid alpha(@pink, 0.3);
 }
 
 .waytify-outputs .outputs-heading {
@@ -368,6 +377,8 @@
 
 .waytify-outputs .device {
   background: none;
+  background-image: none;
+  box-shadow: none;
   border: none;
   border-radius: 9px;
   padding: 7px 10px;

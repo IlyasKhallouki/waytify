@@ -858,6 +858,7 @@ impl Engine {
         let player = self.state.player.as_ref()?;
         Some(crate::audio::Owner {
             binary: mpris::short_name(&player.bus_name).to_string(),
+            identity: player.identity.clone(),
             pid: self.attached.as_ref().and_then(|a| a.pid),
         })
     }

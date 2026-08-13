@@ -8,6 +8,13 @@ Written in Rust. Themed with CSS.
 
 ![The waytify player window](docs/images/popup.png)
 
+The colours are not in the stylesheet. waytify takes them from the album cover,
+so the border, the scrubber, the play button and the line being sung all follow
+whatever is playing. The theme above ships as
+[`contrib/themes/burning-cherry.css`](contrib/themes/burning-cherry.css).
+
+![Choosing which device plays](docs/images/devices.png)
+
 > **Status: early but usable.** The Spotify layer is optional: without it you
 > still get a full player for any MPRIS source. See [roadmap](#roadmap).
 
