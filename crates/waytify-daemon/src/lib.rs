@@ -5,7 +5,7 @@
 //! caches, and later OAuth tokens) has to live here and outlive them.
 
 use anyhow::{Context, Result};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -428,10 +428,6 @@ async fn send(writer: &mut tokio::net::unix::OwnedWriteHalf, frame: &Frame) -> R
     Ok(())
 }
 
-/// Where the daemon would listen, for diagnostics.
-pub fn socket_location() -> PathBuf {
-    paths::socket_path()
-}
 
 #[cfg(test)]
 mod tests {

@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
-use waytify_ipc::{BarOutput, Command, Frame, PROTOCOL_VERSION, Scope, State, paths};
+use waytify_ipc::{Command, Frame, PROTOCOL_VERSION, Scope, State, paths};
 
 /// Waybar hides a custom module whose text is empty, which is the right thing to
 /// show while the daemon is starting or after it goes away.
@@ -52,7 +52,9 @@ pub async fn run_bar() -> Result<()> {
                 // Clear the module rather than leaving a stale track on screen,
                 // then come straight back: this is the common case and it should
                 // not be the one that waits.
-                write_line(&mut stdout, BLANK).await?;
+                if let Break = write_or_stop(&mut stdout, BLANK).await? {
+                    return Ok(());
+                }
                 tokio::time::sleep(RETRY_AFTER_DISCONNECT).await;
             }
             Err(_) => {
@@ -62,7 +64,9 @@ pub async fn run_bar() -> Result<()> {
                 if let Err(e) = spawn_daemon() {
                     tracing::debug!("could not start the daemon: {e:#}");
                 }
-                write_line(&mut stdout, BLANK).await?;
+                if let Break = write_or_stop(&mut stdout, BLANK).await? {
+                    return Ok(());
+                }
                 tokio::time::sleep(spawn_backoff).await;
                 spawn_backoff = (spawn_backoff * 2).min(SPAWN_MAX);
             }
@@ -80,7 +84,9 @@ async fn stream_frames(stream: UnixStream, stdout: &mut tokio::io::Stdout) -> Re
     while let Some(line) = lines.next_line().await? {
         match serde_json::from_str::<Frame>(&line) {
             Ok(Frame::Bar { bar }) => {
-                write_line(stdout, &serde_json::to_string(&bar)?).await?;
+                if let Break = write_or_stop(stdout, &serde_json::to_string(&bar)?).await? {
+                    return Ok(());
+                }
             }
             Ok(Frame::Hello { protocol, version }) => {
                 check_protocol(protocol, &version)?;
@@ -145,12 +151,6 @@ pub async fn snapshot() -> Result<State> {
         }
     }
     anyhow::bail!("daemon closed the connection before sending state")
-}
-
-/// Render a state the way the bar would, without a daemon. Used by `--dry-run`
-/// style checks and by the test suite.
-pub fn render_offline(bar: &BarOutput) -> Result<String> {
-    Ok(serde_json::to_string(bar)?)
 }
 
 fn check_protocol(protocol: u32, version: &str) -> Result<()> {
@@ -218,6 +218,34 @@ fn spawn_daemon() -> Result<()> {
     Ok(())
 }
 
+/// Whether to carry on writing, or stop because nobody is reading.
+#[derive(Debug, PartialEq, Eq)]
+enum Flow {
+    Continue,
+    Break,
+}
+use Flow::Break;
+
+/// Write a line, treating a closed pipe as the end rather than a failure.
+///
+/// Waybar closing stdout is how this process is told its module is gone, which
+/// happens on every bar reload. Reporting that as an error puts "Broken pipe" in
+/// the log of anyone who restarts their bar and makes an ordinary shutdown look
+/// like a crash.
+async fn write_or_stop(stdout: &mut tokio::io::Stdout, line: &str) -> Result<Flow> {
+    match write_line(stdout, line).await {
+        Ok(()) => Ok(Flow::Continue),
+        Err(e) if is_pipe_closed(&e) => Ok(Flow::Break),
+        Err(e) => Err(e),
+    }
+}
+
+fn is_pipe_closed(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<std::io::Error>()
+        .is_some_and(|io| io.kind() == std::io::ErrorKind::BrokenPipe)
+}
+
 async fn write_line(stdout: &mut tokio::io::Stdout, line: &str) -> Result<()> {
     stdout.write_all(line.as_bytes()).await?;
     stdout.write_all(b"\n").await?;
@@ -229,6 +257,23 @@ async fn write_line(stdout: &mut tokio::io::Stdout, line: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use waytify_ipc::BarOutput;
+
+    #[test]
+    fn a_closed_pipe_is_not_a_failure() {
+        use std::io::ErrorKind;
+        // Waybar closing stdout is how the module is told to stop, and it
+        // happens on every bar reload.
+        let closed = anyhow::Error::from(std::io::Error::from(ErrorKind::BrokenPipe));
+        assert!(super::is_pipe_closed(&closed));
+
+        // Anything else still has to surface. A full disk reported as a tidy
+        // shutdown is how a module silently stops updating.
+        let full = anyhow::Error::from(std::io::Error::from(ErrorKind::StorageFull));
+        assert!(!super::is_pipe_closed(&full));
+        assert!(!super::is_pipe_closed(&anyhow::anyhow!("daemon went away")));
+    }
+
     use super::*;
 
     #[test]
