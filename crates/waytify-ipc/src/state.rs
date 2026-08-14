@@ -128,9 +128,25 @@ pub enum MediaKind {
 pub struct PlayContext {
     pub kind: ContextKind,
     pub name: String,
+    /// What to hand back to Spotify to play from it again.
+    ///
+    /// Absent for a context Spotify names but will not identify, which is rare
+    /// and means the upcoming list can be read but not played from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uri: Option<String>,
     /// Opens it in the real client.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+}
+
+impl PlayContext {
+    /// Whether an item inside this context can be started directly.
+    ///
+    /// Spotify's offset only works for an album or a playlist. An artist page
+    /// or a show has an order, but not one it will start you at.
+    pub fn is_addressable(&self) -> bool {
+        self.uri.is_some() && matches!(self.kind, ContextKind::Playlist | ContextKind::Album)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -456,6 +472,29 @@ mod tests {
                 LyricLine { at_ms: 9_000, text: "third".into() },
             ],
         }
+    }
+
+    #[test]
+    fn only_a_playlist_or_album_can_be_started_at_an_item() {
+        let context = |kind, uri: Option<&str>| PlayContext {
+            kind,
+            name: "Something".into(),
+            uri: uri.map(Into::into),
+            url: None,
+        };
+
+        assert!(context(ContextKind::Playlist, Some("spotify:playlist:x")).is_addressable());
+        assert!(context(ContextKind::Album, Some("spotify:album:x")).is_addressable());
+
+        // An artist page and a show have an order but not one Spotify will
+        // start you at, so their rows stay unclickable rather than failing.
+        assert!(!context(ContextKind::Artist, Some("spotify:artist:x")).is_addressable());
+        assert!(!context(ContextKind::Show, Some("spotify:show:x")).is_addressable());
+        assert!(!context(ContextKind::Collection, Some("spotify:collection:x")).is_addressable());
+        assert!(!context(ContextKind::Other, Some("spotify:whatever:x")).is_addressable());
+
+        // Named but not identified: readable, not playable.
+        assert!(!context(ContextKind::Playlist, None).is_addressable());
     }
 
     #[test]

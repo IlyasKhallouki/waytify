@@ -86,7 +86,7 @@ anything, and the window does not even need to be closed.
         ├── .queue-heading          a GtkToggleButton, so :checked applies
         │   ├── .queue-heading-label
         │   └── .queue-chevron
-        └── .queue-track            one upcoming track, at most five
+        └── .queue-track            a button, insensitive when it cannot play
             ├── .queue-title
             └── .queue-artist
 

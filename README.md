@@ -179,9 +179,10 @@ With a Spotify account connected it also lists what is playing next, folded
 away until you ask for it, and lets you move playback between Connect devices.
 Spotify only reports devices with a live session, so a phone with the app closed
 will not be listed even though the Spotify app itself shows it: the app does its
-own discovery on the local network, and the Web API exposes no equivalent. That list
-is read only, since Spotify offers no way to jump to a position in a queue, and
-it appears only while a Spotify track is playing: your account still has a queue
+own discovery on the local network, and the Web API exposes no equivalent. Clicking one of those plays it, when playback came from a
+playlist or album: Spotify cannot move through a queue, but it can restart a
+context at a chosen item, which amounts to the same thing. The list appears only
+while a Spotify track is playing: your account still has a queue
 during a browser video, but showing it there would be describing the wrong thing.
 
 It starts on first use and then stays resident, hidden, so reopening is instant.

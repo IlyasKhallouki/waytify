@@ -129,6 +129,14 @@ pub enum Command {
     TransferTo {
         device_id: String,
     },
+    /// Play one of the upcoming items, by its Spotify URI.
+    ///
+    /// Only meaningful for something inside the current playlist or album:
+    /// Spotify restarts the context at that item rather than moving a cursor
+    /// through the queue, which is the closest thing it offers.
+    PlayQueued {
+        uri: String,
+    },
     /// Ask Spotify for the device list now.
     ///
     /// It is polled while the window is open, but a device that has just been

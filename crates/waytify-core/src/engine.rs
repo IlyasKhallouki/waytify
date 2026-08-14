@@ -1014,6 +1014,26 @@ impl Engine {
             Command::ToggleMute => {
                 self.audio_request(|owner| crate::audio::Request::ToggleMuted { owner })?
             }
+            Command::PlayQueued { uri } => {
+                let client = self
+                    .spotify
+                    .clone()
+                    .ok_or_else(|| anyhow::anyhow!("no Spotify account connected"))?;
+                let context = self
+                    .state
+                    .spotify
+                    .context
+                    .as_ref()
+                    .and_then(|c| c.uri.clone())
+                    .ok_or_else(|| anyhow::anyhow!("nothing is playing from a playlist"))?;
+                let uri = uri.clone();
+
+                tokio::spawn(async move {
+                    if let Err(e) = client.lock().await.play_at(&context, &uri).await {
+                        tracing::warn!("could not play the queued item: {e:#}");
+                    }
+                });
+            }
             Command::RefreshDevices => self.request_devices(),
             Command::ToggleLike => {
                 let client = self

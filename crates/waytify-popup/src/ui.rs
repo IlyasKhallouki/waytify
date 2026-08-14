@@ -121,6 +121,10 @@ pub struct Ui {
     /// The queue as last rendered, so rows are rebuilt when it moves rather than
     /// on every state frame.
     listed_queue: std::cell::RefCell<Vec<waytify_ipc::Track>>,
+    /// Whether those rows were built as playable. Part of the rebuild condition,
+    /// since the same queue can become playable when the context arrives a
+    /// moment after it.
+    queue_playable: Cell<bool>,
     /// Devices currently listed in the picker, so it is only rebuilt when the
     /// set changes rather than on every state frame.
     listed_devices: std::cell::RefCell<Vec<waytify_ipc::Device>>,
@@ -404,6 +408,7 @@ impl Ui {
             queue_toggle,
             queue_list,
             listed_queue: std::cell::RefCell::new(Vec::new()),
+            queue_playable: Cell::new(false),
             listed_devices: std::cell::RefCell::new(Vec::new()),
             client: Rc::clone(&client),
             dragging: Rc::new(Cell::new(false)),
@@ -930,28 +935,53 @@ impl Ui {
             self.queue_toggle.set_active(false);
         }
 
-        if self.listed_queue.borrow().as_slice() == upcoming {
+        // Playable only from inside a playlist or album, and only with the
+        // Premium that every write to /me/player needs. Anywhere else the rows
+        // stay exactly as they were: readable, and honest about doing nothing.
+        let playable = state.caps.can_transfer
+            && state.spotify.context.as_ref().is_some_and(|c| c.is_addressable());
+
+        if self.listed_queue.borrow().as_slice() == upcoming
+            && self.queue_playable.get() == playable
+        {
             return;
         }
+        self.queue_playable.set(playable);
 
         while let Some(child) = self.queue_list.first_child() {
             self.queue_list.remove(&child);
         }
 
         for track in upcoming {
-            let row = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
-            row.add_css_class("queue-track");
+            let content = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
 
             let title = label("queue-title");
             title.set_text(&track.title);
             title.set_hexpand(true);
-            row.append(&title);
+            content.append(&title);
 
             let artists = track.artist_line();
             if !artists.is_empty() {
                 let artist = label("queue-artist");
                 artist.set_text(&artists);
-                row.append(&artist);
+                content.append(&artist);
+            }
+
+            let row = gtk4::Button::new();
+            row.add_css_class("queue-track");
+            row.add_css_class("flat");
+            row.set_child(Some(&content));
+
+            // A row with no uri cannot be played whatever the context is, which
+            // happens when Spotify gives an entry without one.
+            let uri = track.id.clone().filter(|u| u.starts_with("spotify:"));
+            row.set_sensitive(playable && uri.is_some());
+
+            if let Some(uri) = uri {
+                let client = Rc::clone(&self.client);
+                row.connect_clicked(move |_| {
+                    client.send(Command::PlayQueued { uri: uri.clone() });
+                });
             }
 
             self.queue_list.append(&row);
@@ -1253,6 +1283,7 @@ mod tests {
         state.spotify.queue = vec![track("First"), track("Second")];
         ui.render(&state);
         assert!(ui.queue.is_visible());
+        check_rows_are_playable_only_when_they_are(&ui, &mut state);
         assert!(!ui.queue_toggle.is_active(), "closed until asked for");
 
         // Closing has to give the height back, which is the whole point of it
@@ -1466,8 +1497,12 @@ mod tests {
         assert!(!ui.context.is_visible());
         assert!(!ui.kind_badge.is_visible());
 
-        state.spotify.context =
-            Some(PlayContext { kind: ContextKind::Playlist, name: "Late night".into(), url: None });
+        state.spotify.context = Some(PlayContext {
+            kind: ContextKind::Playlist,
+            name: "Late night".into(),
+            uri: None,
+            url: None,
+        });
         ui.render(&state);
         assert!(ui.context.is_visible());
         assert_eq!(ui.context_label.text(), "Playing from playlist");
@@ -1595,13 +1630,79 @@ mod tests {
         std::array::from_fn(|i| ui.row(i).text().to_string())
     }
 
+    /// A row is only clickable when clicking it would work.
+    ///
+    /// Spotify restarts a context at an item rather than moving through the
+    /// queue, so it needs a playlist or album to restart, the Premium every
+    /// write to /me/player needs, and a uri for the item itself. A row that
+    /// looks clickable and fails is worse than one that never offered.
+    fn check_rows_are_playable_only_when_they_are(ui: &Ui, state: &mut State) {
+        use waytify_ipc::{ContextKind, PlayContext};
+
+        let sensitive = |ui: &Ui| {
+            let mut out = Vec::new();
+            let mut child = ui.queue_list.first_child();
+            while let Some(row) = child {
+                out.push(row.is_sensitive());
+                child = row.next_sibling();
+            }
+            out
+        };
+
+        // No context: nothing to restart, so nothing is clickable.
+        state.caps.can_transfer = true;
+        let queued = |title: &str, uri: Option<&str>| Track {
+            id: uri.map(Into::into),
+            title: title.into(),
+            artists: vec!["Someone".into()],
+            ..Default::default()
+        };
+        state.spotify.queue = vec![
+            queued("First", Some("spotify:track:a")),
+            queued("Second", Some("spotify:track:b")),
+        ];
+        ui.render(state);
+        assert_eq!(sensitive(ui), [false, false]);
+
+        state.spotify.context = Some(PlayContext {
+            kind: ContextKind::Playlist,
+            name: "Late night".into(),
+            uri: Some("spotify:playlist:x".into()),
+            url: None,
+        });
+        ui.render(state);
+        assert_eq!(sensitive(ui), [true, true], "a playlist can be restarted at an item");
+
+        // Free accounts cannot write to /me/player at all.
+        state.caps.can_transfer = false;
+        ui.render(state);
+        assert_eq!(sensitive(ui), [false, false]);
+        state.caps.can_transfer = true;
+
+        // An entry Spotify gave without a uri cannot be played whatever the
+        // context is.
+        state.spotify.queue =
+            vec![queued("First", Some("spotify:track:a")), queued("Second", None)];
+        ui.render(state);
+        assert_eq!(sensitive(ui), [true, false]);
+
+        // The rows have to be rebuilt when the context arrives, which happens a
+        // moment after the queue does. Comparing the queue alone would leave
+        // them dead until the next track.
+        state.spotify.context = None;
+        ui.render(state);
+        assert_eq!(sensitive(ui), [false, false], "same queue, context gone");
+    }
+
     /// The title of each row, in order.
     fn rows(list: &gtk4::Box) -> Vec<String> {
         let mut titles = Vec::new();
         let mut child = list.first_child();
         while let Some(row) = child {
+            // The row is a button now, so its title is one level further in.
             let title = row
                 .first_child()
+                .and_then(|content| content.first_child())
                 .and_then(|w| w.downcast::<gtk4::Label>().ok())
                 .expect("every row leads with its title");
             titles.push(title.text().to_string());

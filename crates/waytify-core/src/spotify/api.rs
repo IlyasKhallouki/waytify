@@ -70,11 +70,19 @@ struct Queue {
     queue: Vec<Item>,
 }
 
+/// A queue entry, which is a track or an episode. Spotify discriminates them
+/// with `type`, and an episode has a show where a track has artists.
 #[derive(Debug, Deserialize)]
 struct Item {
     name: String,
+    /// Needed to play it. Without this the rows can only be looked at.
+    uri: Option<String>,
+    #[serde(rename = "type", default)]
+    kind: Option<String>,
     #[serde(default)]
     artists: Vec<Artist>,
+    #[serde(default)]
+    show: Option<Named>,
     #[serde(default)]
     duration_ms: Option<u64>,
 }
@@ -328,6 +336,21 @@ impl Client {
         self.player_write(reqwest::Method::PUT, "/me/player", Some(body)).await
     }
 
+    /// Start playing one item from inside a playlist or album.
+    ///
+    /// This is not "jump to a position in the queue", which Spotify does not
+    /// offer. It restarts the context at the chosen item, which is the same
+    /// thing from the outside as long as the item is part of that context. An
+    /// item added to the queue by hand is not, and Spotify answers with an
+    /// error rather than playing the wrong thing.
+    pub async fn play_at(&mut self, context_uri: &str, item_uri: &str) -> Result<()> {
+        let body = serde_json::json!({
+            "context_uri": context_uri,
+            "offset": { "uri": item_uri },
+        });
+        self.player_write(reqwest::Method::PUT, "/me/player/play", Some(body)).await
+    }
+
     pub async fn set_remote_volume(&mut self, percent: u8) -> Result<()> {
         let path = format!("/me/player/volume?volume_percent={}", percent.min(100));
         self.player_write(reqwest::Method::PUT, &path, None).await
@@ -360,10 +383,12 @@ impl Client {
         let url = context.external_urls.spotify;
 
         let uri = context.uri.unwrap_or_default();
+        let identity = (!uri.is_empty()).then(|| uri.clone());
         if let Some(name) = self.context_names.get(&uri) {
             return Ok(Some(waytify_ipc::PlayContext {
                 kind: context.kind,
                 name: name.clone(),
+                uri: identity,
                 url,
             }));
         }
@@ -381,7 +406,12 @@ impl Client {
         if !uri.is_empty() {
             self.context_names.insert(uri, named.name.clone());
         }
-        Ok(Some(waytify_ipc::PlayContext { kind: context.kind, name: named.name, url }))
+        Ok(Some(waytify_ipc::PlayContext {
+            kind: context.kind,
+            name: named.name,
+            uri: identity,
+            url,
+        }))
     }
 
     /// What is coming up, as far as Spotify will say.
@@ -402,11 +432,29 @@ impl Client {
         Ok(queue
             .queue
             .into_iter()
-            .map(|item| waytify_ipc::Track {
-                title: item.name,
-                artists: item.artists.into_iter().map(|a| a.name).collect(),
-                length_ms: item.duration_ms,
-                ..Default::default()
+            .map(|item| {
+                let podcast = item.kind.as_deref() == Some("episode");
+                let mut artists: Vec<String> = item.artists.into_iter().map(|a| a.name).collect();
+                // An episode has no artists. The show it belongs to is the
+                // equivalent line, and leaving it blank loses the only context
+                // an episode title has.
+                if let Some(show) = item.show {
+                    artists.push(show.name);
+                }
+                waytify_ipc::Track {
+                    // The uri goes in the id, which is where everything else
+                    // already looks for a Spotify identity.
+                    id: item.uri,
+                    title: item.name,
+                    artists,
+                    length_ms: item.duration_ms,
+                    kind: if podcast {
+                        waytify_ipc::MediaKind::Podcast
+                    } else {
+                        waytify_ipc::MediaKind::Music
+                    },
+                    ..Default::default()
+                }
             })
             .collect())
     }
@@ -554,6 +602,22 @@ mod tests {
         // A real failure must still surface rather than being read as "nothing
         // queued", which would hide the problem behind a plausible answer.
         assert!(!says_no_queue(StatusCode::UNAUTHORIZED, r#"{"error":"expired"}"#));
+    }
+
+    #[test]
+    fn queue_entries_carry_what_it_takes_to_play_them() {
+        let json = r#"{"queue":[
+            {"type":"track","name":"A song","uri":"spotify:track:4uLU6hMCjMI75M1A2tKUQC",
+             "artists":[{"name":"Someone"}],"duration_ms":1000},
+            {"type":"episode","name":"An episode","uri":"spotify:episode:5vHwCgvNqDDPLTAfsvOTGw",
+             "show":{"name":"A show"},"duration_ms":2000}
+        ]}"#;
+        let parsed: Queue = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed.queue[0].uri.as_deref(), Some("spotify:track:4uLU6hMCjMI75M1A2tKUQC"));
+        assert_eq!(parsed.queue[1].kind.as_deref(), Some("episode"));
+        // An episode has a show where a track has artists. Without it the row
+        // would show a title and nothing else.
+        assert_eq!(parsed.queue[1].show.as_ref().map(|s| s.name.as_str()), Some("A show"));
     }
 
     #[test]
