@@ -56,7 +56,7 @@ anything, and the window does not even need to be closed.
     ├── .search                     opens the search popover
     ├── .waytify-context            a GtkMenuButton opening the playlist picker
     │   ├── .context-label          "Playing from playlist", or "Play from"
-    │   └── .context-name           the playlist or album itself
+    │   └── .context-name           hidden when Spotify will not name it
     ├── .waytify-header
     │   ├── .waytify-art            cover image
     │   │   └── .art-missing        stands in when there is no cover
@@ -87,9 +87,10 @@ anything, and the window does not even need to be closed.
         ├── .tracklist-heading      a GtkToggleButton, so :checked applies
         │   ├── .tracklist-heading-label
         │   └── .tracklist-chevron
-        └── .tracklist-track        a button, insensitive when it cannot play
-            ├── .tracklist-title
-            └── .tracklist-artist
+        ├── .tracklist-track        a button, insensitive when it cannot play
+        │   ├── .tracklist-title
+        │   └── .tracklist-artist
+        └── .tracklist-note         a sentence in place of rows that were refused
             ├── .queue-title
             └── .queue-artist
 

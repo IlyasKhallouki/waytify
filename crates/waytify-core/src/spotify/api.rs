@@ -198,6 +198,12 @@ pub struct Client {
     premium: Option<bool>,
     /// Context names by uri, so playing a whole playlist asks once rather than
     /// once per track.
+    ///
+    /// A uri Spotify will not name maps to an empty string rather than being
+    /// absent, so the failure is remembered too. Spotify's own algorithmic
+    /// playlists, the ones whose ids begin 37i9, answer 404 to a request for
+    /// their details, and without this every track would ask again and be
+    /// refused again.
     context_names: std::collections::HashMap<String, String>,
     /// Set when the stored token predates a scope this build needs.
     ///
@@ -668,16 +674,24 @@ impl Client {
 
         let uri = context.uri.unwrap_or_default();
         let identity = (!uri.is_empty()).then(|| uri.clone());
-        if let Some(name) = self.context_names.get(&uri) {
-            return Ok(Some(waytify_ipc::PlayContext {
+        let known = |name: String| {
+            Ok(Some(waytify_ipc::PlayContext {
                 kind: context.kind,
-                name: name.clone(),
-                uri: identity,
-                url,
-            }));
+                name,
+                uri: identity.clone(),
+                url: url.clone(),
+            }))
+        };
+
+        if let Some(name) = self.context_names.get(&uri) {
+            return known(name.clone());
         }
 
-        let Some(href) = context.href else { return Ok(None) };
+        // The kind is already known and worth saying on its own. Everything
+        // below is an attempt to add a name to it, and failing at that is not a
+        // reason to claim playback came from nowhere.
+        let Some(href) = context.href else { return known(String::new()) };
+
         // Ask for the name alone where the endpoint allows it. A playlist object
         // is otherwise its entire track list.
         let path = href.strip_prefix(API).unwrap_or(&href).to_string();
@@ -685,17 +699,23 @@ impl Client {
             waytify_ipc::ContextKind::Playlist => format!("{path}?fields=name"),
             _ => path,
         };
-        let named: Named = self.get_json(&path).await?;
+
+        let name = match self.get_json::<Named>(&path).await {
+            Ok(named) => named.name,
+            // Spotify's own algorithmic playlists, Daily Mix and the rest,
+            // answer 404 to a request for their details even while playing from
+            // one. There is no name to be had, so the kind stands alone rather
+            // than the whole line disappearing.
+            Err(e) => {
+                tracing::debug!("no name for {uri}: {e:#}");
+                String::new()
+            }
+        };
 
         if !uri.is_empty() {
-            self.context_names.insert(uri, named.name.clone());
+            self.context_names.insert(uri, name.clone());
         }
-        Ok(Some(waytify_ipc::PlayContext {
-            kind: context.kind,
-            name: named.name,
-            uri: identity,
-            url,
-        }))
+        known(name)
     }
 
     /// What is coming up, as far as Spotify will say.
@@ -889,6 +909,26 @@ mod tests {
             urlencode("spotify:episode:5vHwCgvNqDDPLTAfsvOTGw"),
             "spotify%3Aepisode%3A5vHwCgvNqDDPLTAfsvOTGw"
         );
+    }
+
+    #[test]
+    fn a_context_survives_spotify_refusing_to_name_it() {
+        // What actually comes back while playing one of Spotify's own mixes:
+        // a real context with a real uri, whose details endpoint then 404s.
+        let json = r#"{"context":{"type":"playlist",
+            "href":"https://api.spotify.com/v1/playlists/37i9dQZF1Epzrxu6Fbywm6",
+            "uri":"spotify:playlist:37i9dQZF1Epzrxu6Fbywm6",
+            "external_urls":{"spotify":"https://open.spotify.com/playlist/37i9dQZF1Epzrxu6Fbywm6"}}}"#;
+        let playback: Playback = serde_json::from_str(json).unwrap();
+        let context = playback.context.expect("a context");
+
+        // The kind and the uri are known before any second request is made, so
+        // failing to add a name to them is not a reason to report that playback
+        // came from nowhere. That was the bug: the line went blank for every
+        // Daily Mix, which is most listening.
+        assert_eq!(context.kind, waytify_ipc::ContextKind::Playlist);
+        assert!(context.uri.is_some());
+        assert!(context.href.is_some());
     }
 
     #[test]

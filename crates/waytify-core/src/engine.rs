@@ -64,8 +64,8 @@ enum PlayerEvent {
     Search(Vec<waytify_ipc::SearchResult>),
     /// What was played recently.
     Recent(Vec<waytify_ipc::Track>),
-    /// Everything in the playlist or album being played.
-    ContextTracks(Vec<waytify_ipc::Track>),
+    /// Everything in the playlist or album being played, or a refusal.
+    ContextTracks(std::result::Result<Vec<waytify_ipc::Track>, ()>),
     /// Lyrics finished downloading, or turned out not to exist. Carries the key
     /// they were fetched for, since the track can change while a request is out.
     Lyrics {
@@ -381,6 +381,7 @@ impl Engine {
         self.state.spotify.queue.clear();
         self.state.spotify.context = None;
         self.state.spotify.context_tracks.clear();
+        self.state.spotify.context_closed = false;
         self.state.lyrics = None;
         self.clock.set_playing(false, Instant::now());
         self.publish();
@@ -460,15 +461,24 @@ impl Engine {
                     return;
                 }
                 if self.state.spotify.context != context {
-                    // What was in the last one does not belong to this one.
+                    // What was in the last one does not belong to this one, and
+                    // neither does whether it could be read.
                     self.state.spotify.context_tracks.clear();
+                    self.state.spotify.context_closed = false;
                     self.state.spotify.context = context;
                     self.publish();
                 }
             }
-            PlayerEvent::ContextTracks(tracks) => {
-                if self.state.spotify.context_tracks != tracks {
+            PlayerEvent::ContextTracks(result) => {
+                let (tracks, closed) = match result {
+                    Ok(tracks) => (tracks, false),
+                    Err(()) => (Vec::new(), true),
+                };
+                if self.state.spotify.context_tracks != tracks
+                    || self.state.spotify.context_closed != closed
+                {
                     self.state.spotify.context_tracks = tracks;
+                    self.state.spotify.context_closed = closed;
                     self.publish();
                 }
             }
@@ -736,9 +746,15 @@ impl Engine {
         tokio::spawn(async move {
             match client.lock().await.context_tracks(&context).await {
                 Ok(tracks) => {
-                    let _ = events.send(PlayerEvent::ContextTracks(tracks)).await;
+                    let _ = events.send(PlayerEvent::ContextTracks(Ok(tracks))).await;
                 }
-                Err(e) => tracing::warn!("could not read what is in this: {e:#}"),
+                // Refused rather than empty. Spotify will not share the contents
+                // of its own algorithmic playlists, and a panel that opens onto
+                // nothing looks like a bug rather than a limit.
+                Err(e) => {
+                    tracing::debug!("could not read what is in this: {e:#}");
+                    let _ = events.send(PlayerEvent::ContextTracks(Err(()))).await;
+                }
             }
         });
     }

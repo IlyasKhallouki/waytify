@@ -35,7 +35,11 @@ const TICK: std::time::Duration = std::time::Duration::from_millis(100);
 ///
 /// Fixed so that the line growing as it becomes the one being sung moves the
 /// text and not the layout, and so the slide distance is known without asking.
-const LYRIC_ROW: i32 = 28;
+///
+/// Two lines of text tall. Lyrics run long, and a row one line high meant every
+/// long line lost its ending to an ellipsis, which is the half of the line the
+/// song was building towards.
+const LYRIC_ROW: i32 = 46;
 
 /// How many rows are on screen. The strip holds one more, below the fold, so
 /// what slides up into view is the next line rather than a gap.
@@ -133,6 +137,24 @@ impl TrackSection {
         {
             label.set_text(title);
         }
+    }
+
+    /// Put a sentence where the rows would be.
+    ///
+    /// For a list that is empty because it was refused rather than because
+    /// there is nothing in it. A panel that opens onto nothing reads as broken.
+    fn explain(&self, message: &str) {
+        while let Some(child) = self.list.first_child() {
+            self.list.remove(&child);
+        }
+        let note = label("tracklist-note");
+        note.set_text(message);
+        note.set_ellipsize(gtk4::pango::EllipsizeMode::None);
+        note.set_wrap(true);
+        self.list.append(&note);
+        // The rows no longer match what is listed, so the next real list has to
+        // rebuild rather than deciding nothing has changed.
+        self.listed.borrow_mut().clear();
     }
 
     /// Fill the rows, if what is in them has changed.
@@ -965,7 +987,10 @@ impl Ui {
             Some(context) => {
                 self.context_label.set_text(context.kind.label());
                 self.context_name.set_text(&context.name);
-                self.context_name.set_visible(true);
+                // Spotify will not name its own algorithmic playlists. The kind
+                // is still true and still worth saying, so the line stays and
+                // the empty half of it goes.
+                self.context_name.set_visible(!context.name.is_empty());
             }
             None => {
                 self.context_label.set_text("Play from");
@@ -1303,6 +1328,11 @@ impl Ui {
             &self.client,
             |uri| Command::PlayQueued { uri },
         );
+        if state.spotify.context_closed {
+            self.in_context.explain(
+                "Spotify does not share what is in its own playlists, so this\nis as much as it will say.",
+            );
+        }
 
         // Anything played before can be played again, which needs no context at
         // all: a track is played on its own.
@@ -1438,9 +1468,16 @@ fn lines_around(lyrics: &waytify_ipc::Lyrics, current: Option<usize>) -> [&str; 
 fn lyric_label() -> gtk4::Label {
     let l = label("lyric-line");
     l.set_xalign(0.5);
-    l.set_wrap(false);
-    // Lyrics are prose and run long. This is what the window is sized around,
-    // since a line that ellipsises has lost the word the song was building to.
+    // Wrap rather than ellipsise. A lyric that runs past the width of the
+    // window is common, and cutting it is worse than letting it take the second
+    // line the row already has room for.
+    l.set_ellipsize(gtk4::pango::EllipsizeMode::None);
+    l.set_wrap(true);
+    l.set_wrap_mode(gtk4::pango::WrapMode::WordChar);
+    l.set_justify(gtk4::Justification::Center);
+    // Past two lines there is nothing sensible to do: the row is a fixed height
+    // so the slide lands where it should, so a third line is cut.
+    l.set_lines(2);
     l.set_max_width_chars(42);
     // Keeps the row occupying its space through instrumental breaks, which are
     // timed blank lines rather than gaps in the data.
@@ -2001,8 +2038,30 @@ mod tests {
             title: "Track one".into(),
             ..Default::default()
         }];
+
+        // Spotify will not say what is in its own playlists. The section says
+        // so rather than opening onto nothing, which reads as broken.
+        state.spotify.context_tracks.clear();
+        state.spotify.context_closed = true;
         ui.render(state);
-        assert!(ui.in_context.list.first_child().expect("a row").is_sensitive());
+        let note = ui
+            .in_context
+            .list
+            .first_child()
+            .and_then(|w| w.downcast::<gtk4::Label>().ok())
+            .expect("a sentence where the rows would be");
+        assert!(note.text().contains("does not share"));
+
+        // And a real list afterwards replaces it rather than being skipped for
+        // looking unchanged.
+        state.spotify.context_closed = false;
+        state.spotify.context_tracks = vec![Track {
+            id: Some("spotify:track:q".into()),
+            title: "Track one".into(),
+            ..Default::default()
+        }];
+        ui.render(state);
+        assert!(ui.in_context.list.first_child().unwrap().is_sensitive());
 
         state.spotify.context_tracks.clear();
         state.spotify.context = None;

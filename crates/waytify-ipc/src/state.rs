@@ -379,6 +379,13 @@ pub struct Spotify {
     /// Everything in the playlist or album being played, once asked for.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub context_tracks: Vec<Track>,
+    /// Set when Spotify refused to say what is in the current context.
+    ///
+    /// Its own algorithmic playlists answer 404 to any request for their
+    /// details, so the list cannot be had. Saying so beats an empty panel that
+    /// looks broken.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub context_closed: bool,
 }
 
 impl Default for Spotify {
@@ -395,6 +402,7 @@ impl Default for Spotify {
             search: Vec::new(),
             recent: Vec::new(),
             context_tracks: Vec::new(),
+            context_closed: false,
         }
     }
 }
