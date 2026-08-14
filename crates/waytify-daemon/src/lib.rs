@@ -428,7 +428,6 @@ async fn send(writer: &mut tokio::net::unix::OwnedWriteHalf, frame: &Frame) -> R
     Ok(())
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

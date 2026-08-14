@@ -449,13 +449,9 @@ mod tests {
 
     #[test]
     fn a_stream_matches_its_player_by_name() {
-        let owner =
-            Owner { binary: "spotify".into(), identity: "Spotify".into(), pid: Some(1234) };
-        let by_binary = |binary: &str, pid| StreamOwner {
-            binary: binary.into(),
-            name: String::new(),
-            pid,
-        };
+        let owner = Owner { binary: "spotify".into(), identity: "Spotify".into(), pid: Some(1234) };
+        let by_binary =
+            |binary: &str, pid| StreamOwner { binary: binary.into(), name: String::new(), pid };
         assert!(owner.owns(&by_binary("spotify", Some(9999))), "the name alone should be enough");
         assert!(owner.owns(&by_binary("Spotify", None)), "matching is case insensitive");
     }
@@ -467,15 +463,18 @@ mod tests {
         let owner =
             Owner { binary: "chromium".into(), identity: "Chromium".into(), pid: Some(1234) };
         assert!(
-            owner.owns(&StreamOwner { binary: "chrome".into(), name: String::new(), pid: Some(1234) }),
+            owner.owns(&StreamOwner {
+                binary: "chrome".into(),
+                name: String::new(),
+                pid: Some(1234)
+            }),
             "same process should match"
         );
     }
 
     #[test]
     fn an_unrelated_stream_is_not_claimed() {
-        let owner =
-            Owner { binary: "spotify".into(), identity: "Spotify".into(), pid: Some(1234) };
+        let owner = Owner { binary: "spotify".into(), identity: "Spotify".into(), pid: Some(1234) };
         let firefox = |pid| StreamOwner { binary: "firefox".into(), name: "Firefox".into(), pid };
         assert!(!owner.owns(&firefox(Some(5678))));
         assert!(!owner.owns(&firefox(None)));

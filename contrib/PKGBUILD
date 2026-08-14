@@ -9,8 +9,11 @@ pkgdesc="Media control for Waybar: MPRIS core, GTK4 layer-shell player window"
 arch=('x86_64' 'aarch64')
 url="https://github.com/IlyasKhallouki/waytify"
 license=('MIT')
-depends=('gtk4' 'gtk4-layer-shell' 'dbus')
+# libpulse is not optional: the binary links against it for the player's own
+# volume, so a package without it installs and then fails to start.
+depends=('gtk4' 'gtk4-layer-shell' 'dbus' 'libpulse')
 makedepends=('cargo')
+optdepends=('waybar: the bar module, which is what most people came for')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
 sha256sums=('SKIP')
 

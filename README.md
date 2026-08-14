@@ -39,8 +39,10 @@ waytify splits along that seam. The bar shows what a string can show. Everything
 else lives in a separate window that Waybar knows nothing about, which also
 means the player half works under any bar, or under none.
 
-That window is a `gtk4-layer-shell` surface: album art, a real draggable
-scrubber, transport, and a stylesheet you can edit while it is open.
+That window is a `gtk4-layer-shell` surface. Album art, a scrubber you can
+actually drag, transport, volume, lyrics that scroll with the song, what is
+playing next, and the list of devices you can move playback to. The stylesheet
+is a file you can edit while the window is open.
 
 ## Install
 
