@@ -44,6 +44,8 @@ pub const SCOPES: &[&str] = &[
     // For listing your own playlists so you can switch between them. Public
     // ones come back without it; private and collaborative ones do not.
     "playlist-read-private",
+    // For the list of what you have just been listening to.
+    "user-read-recently-played",
 ];
 
 /// How long to wait for the person to finish authorizing in their browser.

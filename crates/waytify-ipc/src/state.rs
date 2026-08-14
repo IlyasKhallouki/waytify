@@ -361,6 +361,9 @@ pub struct Spotify {
     /// box is emptied.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub search: Vec<SearchResult>,
+    /// Full scope only, and only once the list has been opened.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub recent: Vec<Track>,
 }
 
 impl Default for Spotify {
@@ -375,6 +378,7 @@ impl Default for Spotify {
             context: None,
             playlists: Vec::new(),
             search: Vec::new(),
+            recent: Vec::new(),
         }
     }
 }
@@ -387,6 +391,7 @@ impl Spotify {
             && self.context.is_none()
             && self.playlists.is_empty()
             && self.search.is_empty()
+            && self.recent.is_empty()
     }
 
     /// True when writes to `/me/player/*` are expected to succeed.

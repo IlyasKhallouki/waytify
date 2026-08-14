@@ -66,6 +66,17 @@ struct Named {
 }
 
 #[derive(Debug, Deserialize)]
+struct History {
+    #[serde(default = "Vec::new")]
+    items: Vec<HistoryItem>,
+}
+
+#[derive(Debug, Deserialize)]
+struct HistoryItem {
+    track: Option<Item>,
+}
+
+#[derive(Debug, Deserialize)]
 struct SearchResponse {
     #[serde(default)]
     tracks: Option<Page<SearchTrack>>,
@@ -490,6 +501,50 @@ impl Client {
         Ok(out)
     }
 
+    /// What was played recently, most recent first.
+    ///
+    /// Spotify repeats a track once per play, so a song heard three times in a
+    /// row appears three times. They are collapsed here: the question this
+    /// answers is "what was that", and the same answer three times is noise.
+    pub async fn recently_played(&mut self) -> Result<Vec<waytify_ipc::Track>> {
+        let response =
+            self.request(reqwest::Method::GET, "/me/player/recently-played?limit=50", None).await?;
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+
+        if status == reqwest::StatusCode::FORBIDDEN {
+            self.scope_missing = true;
+            bail!(
+                "your Spotify login predates this feature. Run `waytify login` \
+                 again to see what you have been listening to."
+            );
+        }
+        // Nothing played yet on a new account.
+        if status == reqwest::StatusCode::NO_CONTENT || body.trim().is_empty() {
+            return Ok(Vec::new());
+        }
+        if !status.is_success() {
+            bail!("Spotify returned {status} for recently played: {body}");
+        }
+
+        let history: History = serde_json::from_str(&body)
+            .context("unexpected response from /me/player/recently-played")?;
+
+        let mut seen = std::collections::HashSet::new();
+        Ok(history
+            .items
+            .into_iter()
+            .filter_map(|entry| entry.track)
+            .filter(|item| match &item.uri {
+                Some(uri) => seen.insert(uri.clone()),
+                // Without a uri there is nothing to compare, and nothing to
+                // play either, so it is dropped rather than shown inert.
+                None => false,
+            })
+            .map(into_track)
+            .collect())
+    }
+
     /// Play one track, on its own.
     ///
     /// Not a context: Spotify plays the given uris and then carries on with
@@ -645,6 +700,28 @@ fn backoff(retry_after: Option<u64>, strikes: u32) -> Duration {
     const CAP: u64 = 300;
     let floor = 5u64.saturating_mul(1 << strikes.min(6).saturating_sub(1));
     Duration::from_secs(retry_after.unwrap_or(5).max(floor).min(CAP))
+}
+
+/// A queue or history entry as a track.
+///
+/// The uri goes in the id, which is where everything else already looks for a
+/// Spotify identity.
+fn into_track(item: Item) -> waytify_ipc::Track {
+    let podcast = item.kind.as_deref() == Some("episode");
+    let mut artists: Vec<String> = item.artists.into_iter().map(|a| a.name).collect();
+    // An episode has no artists. The show it belongs to is the equivalent line,
+    // and leaving it blank loses the only context an episode title has.
+    if let Some(show) = item.show {
+        artists.push(show.name);
+    }
+    waytify_ipc::Track {
+        id: item.uri,
+        title: item.name,
+        artists,
+        length_ms: item.duration_ms,
+        kind: if podcast { waytify_ipc::MediaKind::Podcast } else { waytify_ipc::MediaKind::Music },
+        ..Default::default()
+    }
 }
 
 /// How many of each kind a search returns.
@@ -806,6 +883,36 @@ mod tests {
         // A real failure must still surface rather than being read as "nothing
         // queued", which would hide the problem behind a plausible answer.
         assert!(!says_no_queue(StatusCode::UNAUTHORIZED, r#"{"error":"expired"}"#));
+    }
+
+    #[test]
+    fn a_song_played_three_times_is_listed_once() {
+        let json = r#"{"items":[
+            {"track":{"type":"track","name":"On repeat","uri":"spotify:track:a"}},
+            {"track":{"type":"track","name":"On repeat","uri":"spotify:track:a"}},
+            {"track":{"type":"track","name":"Something else","uri":"spotify:track:b"}},
+            {"track":null},
+            {"track":{"type":"track","name":"No uri"}}
+        ]}"#;
+        let history: History = serde_json::from_str(json).unwrap();
+
+        let mut seen = std::collections::HashSet::new();
+        let kept: Vec<_> = history
+            .items
+            .into_iter()
+            .filter_map(|e| e.track)
+            .filter(|i| match &i.uri {
+                Some(uri) => seen.insert(uri.clone()),
+                None => false,
+            })
+            .map(into_track)
+            .collect();
+
+        // Spotify repeats an entry per play. The question this answers is "what
+        // was that", and the same answer twice is noise.
+        assert_eq!(kept.len(), 2);
+        assert_eq!(kept[0].title, "On repeat");
+        assert_eq!(kept[1].title, "Something else");
     }
 
     #[test]

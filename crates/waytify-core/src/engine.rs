@@ -62,6 +62,8 @@ enum PlayerEvent {
     Playlists(Vec<waytify_ipc::Playlist>),
     /// What a search turned up.
     Search(Vec<waytify_ipc::SearchResult>),
+    /// What was played recently.
+    Recent(Vec<waytify_ipc::Track>),
     /// Lyrics finished downloading, or turned out not to exist. Carries the key
     /// they were fetched for, since the track can change while a request is out.
     Lyrics {
@@ -459,6 +461,12 @@ impl Engine {
                     self.publish();
                 }
             }
+            PlayerEvent::Recent(recent) => {
+                if self.state.spotify.recent != recent {
+                    self.state.spotify.recent = recent;
+                    self.publish();
+                }
+            }
             PlayerEvent::Search(results) => {
                 if self.state.spotify.search != results {
                     self.state.spotify.search = results;
@@ -682,6 +690,25 @@ impl Engine {
                     let _ = events.send(PlayerEvent::Search(results)).await;
                 }
                 Err(e) => tracing::debug!("search failed: {e:#}"),
+            }
+        });
+    }
+
+    /// Fetch what was played recently.
+    ///
+    /// Asked for when the list is opened, like the playlists. It is a record of
+    /// the past, so it cannot go out of date in a way that matters.
+    fn request_recent(&self) {
+        let Some(client) = &self.spotify else { return };
+        let client = Arc::clone(client);
+        let events = self.events_tx.clone();
+
+        tokio::spawn(async move {
+            match client.lock().await.recently_played().await {
+                Ok(recent) => {
+                    let _ = events.send(PlayerEvent::Recent(recent)).await;
+                }
+                Err(e) => tracing::warn!("could not read recently played: {e:#}"),
             }
         });
     }
@@ -1102,6 +1129,7 @@ impl Engine {
                 });
             }
             Command::RefreshPlaylists => self.request_playlists(),
+            Command::RefreshRecent => self.request_recent(),
             Command::Search { query } => self.request_search(query.clone()),
             Command::PlayTrack { uri } => {
                 let client = self

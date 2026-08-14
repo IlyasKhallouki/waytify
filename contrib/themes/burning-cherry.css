@@ -369,42 +369,42 @@
 
 /* ----------------------------------------------------------------- up next */
 
-.waytify-queue {
+.waytify-tracklist {
   margin-top: 8px;
 }
 
-.waytify-queue .queue-heading {
+.waytify-tracklist .tracklist-heading {
   background: none;
   border: none;
   padding: 4px 2px;
 }
 
-.waytify-queue .queue-heading-label {
+.waytify-tracklist .tracklist-heading-label {
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.14em;
   color: alpha(@pink, 0.7);
 }
 
-.waytify-queue .queue-heading:hover .queue-heading-label,
-.waytify-queue .queue-heading:checked .queue-heading-label {
+.waytify-tracklist .tracklist-heading:hover .queue-heading-label,
+.waytify-tracklist .tracklist-heading:checked .queue-heading-label {
   color: @pink;
 }
 
-.waytify-queue .queue-chevron {
+.waytify-tracklist .tracklist-chevron {
   color: alpha(@pink, 0.55);
 }
 
-.waytify-queue .queue-track {
+.waytify-tracklist .tracklist-track {
   padding: 3px 0;
 }
 
-.waytify-queue .queue-title {
+.waytify-tracklist .tracklist-title {
   font-size: 12px;
   color: alpha(@ink, 0.8);
 }
 
-.waytify-queue .queue-artist {
+.waytify-tracklist .tracklist-artist {
   font-size: 11px;
   color: alpha(@ink, 0.38);
 }

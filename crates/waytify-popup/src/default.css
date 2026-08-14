@@ -231,7 +231,7 @@
 }
 
 /* Up next. Read only, so nothing here is styled as interactive. */
-#waytify-popup .waytify-queue .queue-heading {
+#waytify-popup .waytify-tracklist .tracklist-heading {
   font-size: 0.75rem;
   font-weight: 600;
   letter-spacing: 0.08em;
@@ -239,15 +239,15 @@
   opacity: 0.55;
 }
 
-#waytify-popup .waytify-queue .queue-track {
+#waytify-popup .waytify-tracklist .tracklist-track {
   padding: 2px 0;
 }
 
-#waytify-popup .waytify-queue .queue-title {
+#waytify-popup .waytify-tracklist .tracklist-title {
   opacity: 0.9;
 }
 
-#waytify-popup .waytify-queue .queue-artist {
+#waytify-popup .waytify-tracklist .tracklist-artist {
   opacity: 0.5;
   font-size: 0.85rem;
 }
@@ -269,13 +269,13 @@
 
 
 /* Up next, closed until asked for. */
-#waytify-popup .waytify-queue .queue-heading {
+#waytify-popup .waytify-tracklist .tracklist-heading {
   background: none;
   border: none;
   padding: 4px 0;
 }
 
-#waytify-popup .waytify-queue .queue-heading-label {
+#waytify-popup .waytify-tracklist .tracklist-heading-label {
   font-size: 0.75rem;
   font-weight: 600;
   letter-spacing: 0.08em;

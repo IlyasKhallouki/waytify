@@ -83,11 +83,13 @@ anything, and the window does not even need to be closed.
     │   ├── .playpause
     │   ├── .next
     │   └── .repeat                 exactly one of .off, .all, .one
-    └── .waytify-queue              closed by default
-        ├── .queue-heading          a GtkToggleButton, so :checked applies
-        │   ├── .queue-heading-label
-        │   └── .queue-chevron
-        └── .queue-track            a button, insensitive when it cannot play
+    └── .waytify-tracklist          Up next and Recently played, both closed
+        ├── .tracklist-heading      a GtkToggleButton, so :checked applies
+        │   ├── .tracklist-heading-label
+        │   └── .tracklist-chevron
+        └── .tracklist-track        a button, insensitive when it cannot play
+            ├── .tracklist-title
+            └── .tracklist-artist
             ├── .queue-title
             └── .queue-artist
 

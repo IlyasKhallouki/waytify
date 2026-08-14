@@ -57,6 +57,143 @@ const SEARCH_SETTLE: std::time::Duration = std::time::Duration::from_millis(350)
 /// still leaves the window a fixed, predictable size.
 const QUEUE_ROWS: usize = 5;
 
+/// A collapsible list of tracks: Up next, and what was played recently.
+///
+/// Both are the same thing with a different source and a different reason for a
+/// row being clickable, so they are the same widget rather than two copies of
+/// it that drift.
+struct TrackSection {
+    root: gtk4::Box,
+    toggle: gtk4::ToggleButton,
+    list: gtk4::Box,
+    /// What is currently listed, so rows are rebuilt when the list moves rather
+    /// than on every state frame, which would close the section under a click.
+    listed: std::cell::RefCell<Vec<waytify_ipc::Track>>,
+    /// Whether those rows were built playable. Part of the rebuild condition,
+    /// since the same list can become playable a moment after it arrives.
+    playable: Cell<bool>,
+}
+
+impl TrackSection {
+    fn build(title: &str) -> Self {
+        let root = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
+        root.add_css_class("waytify-tracklist");
+
+        let toggle = gtk4::ToggleButton::new();
+        toggle.add_css_class("tracklist-heading");
+        toggle.add_css_class("flat");
+        let heading = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
+        let heading_label = label("tracklist-heading-label");
+        heading_label.set_text(title);
+        heading_label.set_hexpand(true);
+        let chevron = gtk4::Image::from_icon_name("pan-end-symbolic");
+        chevron.add_css_class("tracklist-chevron");
+        heading.append(&heading_label);
+        heading.append(&chevron);
+        toggle.set_child(Some(&heading));
+
+        // Plain visibility rather than a GtkRevealer, which only shrinks its
+        // measurement for the slide transitions and otherwise reports its
+        // child's full height whether revealed or not, so closing the list gave
+        // none of the window's height back.
+        let list = gtk4::Box::new(gtk4::Orientation::Vertical, 2);
+        list.set_visible(false);
+
+        {
+            let list = list.clone();
+            let chevron = chevron.clone();
+            toggle.connect_toggled(move |t| {
+                list.set_visible(t.is_active());
+                chevron.set_icon_name(Some(if t.is_active() {
+                    "pan-down-symbolic"
+                } else {
+                    "pan-end-symbolic"
+                }));
+            });
+        }
+
+        root.append(&toggle);
+        root.append(&list);
+        Self {
+            root,
+            toggle,
+            list,
+            listed: std::cell::RefCell::new(Vec::new()),
+            playable: Cell::new(false),
+        }
+    }
+
+    /// Fill the rows, if what is in them has changed.
+    ///
+    /// `command` turns a row's uri into whatever plays it, which is the one
+    /// thing the two lists do differently: a queued track restarts its context
+    /// at that item, and a recently played one is simply played.
+    /// `offered` is whether the section exists at all, which is not the same as
+    /// having rows. A list fetched only when it is opened has to be there to be
+    /// opened, so it cannot hide itself for being empty.
+    fn render<F>(
+        &self,
+        tracks: &[waytify_ipc::Track],
+        offered: bool,
+        playable: bool,
+        client: &Rc<Client>,
+        command: F,
+    ) where
+        F: Fn(String) -> Command + Clone + 'static,
+    {
+        self.root.set_visible(offered);
+
+        // A section that has gone away has no open state worth keeping. Coming
+        // back already open, showing rows nobody asked to see, contradicts it
+        // being closed to start with.
+        if !offered {
+            self.toggle.set_active(false);
+        }
+
+        if self.listed.borrow().as_slice() == tracks && self.playable.get() == playable {
+            return;
+        }
+        self.playable.set(playable);
+
+        while let Some(child) = self.list.first_child() {
+            self.list.remove(&child);
+        }
+
+        for track in tracks {
+            let content = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
+            let title = label("tracklist-title");
+            title.set_text(&track.title);
+            title.set_hexpand(true);
+            content.append(&title);
+
+            let artists = track.artist_line();
+            if !artists.is_empty() {
+                let artist = label("tracklist-artist");
+                artist.set_text(&artists);
+                content.append(&artist);
+            }
+
+            let row = gtk4::Button::new();
+            row.add_css_class("tracklist-track");
+            row.add_css_class("flat");
+            row.set_child(Some(&content));
+
+            // A row with no uri cannot be played whatever else is true, which
+            // happens when Spotify gives an entry without one.
+            let uri = track.id.clone().filter(|u| u.starts_with("spotify:"));
+            row.set_sensitive(playable && uri.is_some());
+
+            if let Some(uri) = uri {
+                let client = Rc::clone(client);
+                let command = command.clone();
+                row.connect_clicked(move |_| client.send(command(uri.clone())));
+            }
+            self.list.append(&row);
+        }
+        *self.listed.borrow_mut() = tracks.to_vec();
+    }
+}
+
 pub struct Ui {
     pub root: gtk4::Box,
     context: gtk4::MenuButton,
@@ -130,16 +267,8 @@ pub struct Ui {
     /// it can work out where playback has got to rather than waiting to be told.
     anchor: Cell<(u64, std::time::Instant)>,
     playing: Cell<bool>,
-    queue: gtk4::Box,
-    queue_toggle: gtk4::ToggleButton,
-    queue_list: gtk4::Box,
-    /// The queue as last rendered, so rows are rebuilt when it moves rather than
-    /// on every state frame.
-    listed_queue: std::cell::RefCell<Vec<waytify_ipc::Track>>,
-    /// Whether those rows were built as playable. Part of the rebuild condition,
-    /// since the same queue can become playable when the context arrives a
-    /// moment after it.
-    queue_playable: Cell<bool>,
+    queue: TrackSection,
+    recent: TrackSection,
     /// Devices currently listed in the picker, so it is only rebuilt when the
     /// set changes rather than on every state frame.
     listed_devices: std::cell::RefCell<Vec<waytify_ipc::Device>>,
@@ -402,59 +531,19 @@ impl Ui {
         lyrics.set_child(Some(&strip));
         let lyric_strip = strip;
 
-        // Read only. Spotify has no endpoint for jumping to an arbitrary queue
-        // position, so these rows are labels rather than buttons: a row that
-        // looked clickable and did nothing would be worse than one that does not.
-        //
-        // Closed to start with. It is the answer to a question you have to ask,
-        // unlike the track and the transport, and a window that opens tall
-        // enough to list five songs you did not want to see is worse than one
-        // click.
-        //
-        // A toggle and a revealer rather than a GtkExpander. The expander
-        // animates its own arrow and child on a timing that is not ours, which
-        // reads as a lurch against a window that is resizing at the same time.
-        // This way the only motion is a fade while the window grows.
-        let queue = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
-        queue.add_css_class("waytify-queue");
+        let queue = TrackSection::build("Up next");
+        let recent = TrackSection::build("Recently played");
 
-        let queue_toggle = gtk4::ToggleButton::new();
-        queue_toggle.add_css_class("queue-heading");
-        queue_toggle.add_css_class("flat");
-        let heading = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
-        let heading_label = label("queue-heading-label");
-        heading_label.set_text("Up next");
-        heading_label.set_hexpand(true);
-        let chevron = gtk4::Image::from_icon_name("pan-end-symbolic");
-        chevron.add_css_class("queue-chevron");
-        heading.append(&heading_label);
-        heading.append(&chevron);
-        queue_toggle.set_child(Some(&heading));
-
-        // Plain visibility rather than a GtkRevealer. A revealer only shrinks
-        // its measurement for the slide transitions; with None or Crossfade it
-        // reports the child's full height whether revealed or not, so closing
-        // the list gave none of the window's height back. Slide would collapse
-        // it, at the cost of the animation that was the complaint in the first
-        // place. Hiding does both: instant, and the space actually returns.
-        let queue_list = gtk4::Box::new(gtk4::Orientation::Vertical, 2);
-        queue_list.set_visible(false);
-
+        // Fetched when opened rather than kept current: a record of the past
+        // cannot go out of date in a way that matters.
         {
-            let list = queue_list.clone();
-            let chevron = chevron.clone();
-            queue_toggle.connect_toggled(move |t| {
-                list.set_visible(t.is_active());
-                chevron.set_icon_name(Some(if t.is_active() {
-                    "pan-down-symbolic"
-                } else {
-                    "pan-end-symbolic"
-                }));
+            let client = Rc::clone(&client);
+            recent.toggle.connect_toggled(move |t| {
+                if t.is_active() {
+                    client.send(Command::RefreshRecent);
+                }
             });
         }
-
-        queue.append(&queue_toggle);
-        queue.append(&queue_list);
 
         top.append(&context);
         top.append(&search);
@@ -464,7 +553,8 @@ impl Ui {
         root.append(&volume_row);
         root.append(&transport);
         root.append(&lyrics);
-        root.append(&queue);
+        root.append(&queue.root);
+        root.append(&recent.root);
 
         let ui = Self {
             root,
@@ -506,10 +596,7 @@ impl Ui {
             anchor: Cell::new((0, std::time::Instant::now())),
             playing: Cell::new(false),
             queue,
-            queue_toggle,
-            queue_list,
-            listed_queue: std::cell::RefCell::new(Vec::new()),
-            queue_playable: Cell::new(false),
+            recent,
             listed_devices: std::cell::RefCell::new(Vec::new()),
             client: Rc::clone(&client),
             dragging: Rc::new(Cell::new(false)),
@@ -1164,67 +1251,30 @@ impl Ui {
 
     fn render_queue(&self, state: &State) {
         let upcoming = &state.spotify.queue[..state.spotify.queue.len().min(QUEUE_ROWS)];
-        self.queue.set_visible(!upcoming.is_empty());
-
-        // A section that has gone away has no open state worth keeping. Coming
-        // back already open, showing songs nobody asked to see, contradicts it
-        // being closed to start with.
-        if upcoming.is_empty() {
-            self.queue_toggle.set_active(false);
-        }
 
         // Playable only from inside a playlist or album, and only with the
         // Premium that every write to /me/player needs. Anywhere else the rows
-        // stay exactly as they were: readable, and honest about doing nothing.
+        // stay readable and honest about doing nothing.
         let playable = state.caps.can_transfer
             && state.spotify.context.as_ref().is_some_and(|c| c.is_addressable());
+        // The queue arrives unasked for, so an empty one means there is nothing
+        // to say and the section goes away.
+        self.queue.render(upcoming, !upcoming.is_empty(), playable, &self.client, |uri| {
+            Command::PlayQueued { uri }
+        });
 
-        if self.listed_queue.borrow().as_slice() == upcoming
-            && self.queue_playable.get() == playable
-        {
-            return;
-        }
-        self.queue_playable.set(playable);
-
-        while let Some(child) = self.queue_list.first_child() {
-            self.queue_list.remove(&child);
-        }
-
-        for track in upcoming {
-            let content = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
-
-            let title = label("queue-title");
-            title.set_text(&track.title);
-            title.set_hexpand(true);
-            content.append(&title);
-
-            let artists = track.artist_line();
-            if !artists.is_empty() {
-                let artist = label("queue-artist");
-                artist.set_text(&artists);
-                content.append(&artist);
-            }
-
-            let row = gtk4::Button::new();
-            row.add_css_class("queue-track");
-            row.add_css_class("flat");
-            row.set_child(Some(&content));
-
-            // A row with no uri cannot be played whatever the context is, which
-            // happens when Spotify gives an entry without one.
-            let uri = track.id.clone().filter(|u| u.starts_with("spotify:"));
-            row.set_sensitive(playable && uri.is_some());
-
-            if let Some(uri) = uri {
-                let client = Rc::clone(&self.client);
-                row.connect_clicked(move |_| {
-                    client.send(Command::PlayQueued { uri: uri.clone() });
-                });
-            }
-
-            self.queue_list.append(&row);
-        }
-        *self.listed_queue.borrow_mut() = upcoming.to_vec();
+        // Anything played before can be played again, which needs no context at
+        // all: a track is played on its own.
+        let recent = &state.spotify.recent[..state.spotify.recent.len().min(QUEUE_ROWS)];
+        // Recently played is fetched when it is opened, so it has to be there
+        // to open. Offered whenever there is an account to ask.
+        self.recent.render(
+            recent,
+            state.spotify.authorized,
+            state.caps.can_transfer,
+            &self.client,
+            |uri| Command::PlayTrack { uri },
+        );
     }
 
     /// Rebuild the Connect device list.
@@ -1516,48 +1566,49 @@ mod tests {
         };
 
         ui.render(&state);
-        assert!(!ui.queue.is_visible(), "an empty queue is not a section to show");
+        assert!(!ui.queue.root.is_visible(), "an empty queue is not a section to show");
 
         state.spotify.queue = vec![track("First"), track("Second")];
         ui.render(&state);
-        assert!(ui.queue.is_visible());
+        assert!(ui.queue.root.is_visible());
         check_rows_are_playable_only_when_they_are(&ui, &mut state);
-        assert!(!ui.queue_toggle.is_active(), "closed until asked for");
+        assert!(!ui.queue.toggle.is_active(), "closed until asked for");
 
         // Closing has to give the height back, which is the whole point of it
         // being closed. A GtkRevealer looks like it does this and does not: it
         // reports its child's full height unless the transition is a slide.
         let height = |ui: &Ui| ui.root.measure(gtk4::Orientation::Vertical, -1).1;
         let shut = height(&ui);
-        ui.queue_toggle.set_active(true);
+        ui.queue.toggle.set_active(true);
         let open = height(&ui);
         assert!(open > shut, "opening makes the window taller: {shut} then {open}");
-        ui.queue_toggle.set_active(false);
+        ui.queue.toggle.set_active(false);
         assert_eq!(height(&ui), shut, "and closing gives every pixel back");
-        assert_eq!(rows(&ui.queue_list), vec!["First", "Second"]);
+        assert_eq!(rows(&ui.queue.list), vec!["First", "Second"]);
 
         // More than fits. The window has to stay a predictable size.
         state.spotify.queue = (0..12).map(|i| track(&format!("Track {i}"))).collect();
         ui.render(&state);
-        assert_eq!(rows(&ui.queue_list).len(), QUEUE_ROWS);
-        assert_eq!(rows(&ui.queue_list)[0], "Track 0", "the next one comes first");
+        assert_eq!(rows(&ui.queue.list).len(), QUEUE_ROWS);
+        assert_eq!(rows(&ui.queue.list)[0], "Track 0", "the next one comes first");
 
         // Rendering the same queue again must not stack duplicate rows, which is
         // what a rebuild on every frame would do a second later.
         ui.render(&state);
-        assert_eq!(rows(&ui.queue_list).len(), QUEUE_ROWS);
+        assert_eq!(rows(&ui.queue.list).len(), QUEUE_ROWS);
 
-        ui.queue_toggle.set_active(true);
+        ui.queue.toggle.set_active(true);
         state.spotify.queue.clear();
         ui.render(&state);
-        assert!(!ui.queue.is_visible(), "the section goes away with its contents");
-        assert!(!ui.queue_toggle.is_active(), "and comes back closed, as it started");
+        assert!(!ui.queue.root.is_visible(), "the section goes away with its contents");
+        assert!(!ui.queue.toggle.is_active(), "and comes back closed, as it started");
 
         check_stylesheets();
         check_repeat(&ui);
         check_context_and_kind(&ui);
         check_a_step_rotates_rather_than_restyling(&ui);
         check_art_colors_cross_providers(&ui);
+        check_recently_played(&ui, &mut state);
         check_lyrics(&ui, &mut state);
         check_the_position_carries_forward(&ui, &mut state);
     }
@@ -1827,6 +1878,42 @@ mod tests {
         assert!(!ui.album.has_css_class("show-name"), "a song is not a show");
     }
 
+    /// Recently played is fetched when it is opened, which it cannot be if it
+    /// hides itself for being empty. That is the difference between a section
+    /// being offered and a section having rows.
+    fn check_recently_played(ui: &Ui, state: &mut State) {
+        state.spotify.authorized = false;
+        state.spotify.recent.clear();
+        ui.render(state);
+        assert!(!ui.recent.root.is_visible(), "no account, nothing to ask");
+
+        state.spotify.authorized = true;
+        ui.render(state);
+        assert!(ui.recent.root.is_visible(), "offered while still empty, or it cannot be opened");
+        assert!(!ui.recent.toggle.is_active());
+
+        state.caps.can_transfer = true;
+        state.spotify.recent = vec![Track {
+            id: Some("spotify:track:z".into()),
+            title: "Heard earlier".into(),
+            ..Default::default()
+        }];
+        ui.render(state);
+        let row = ui.recent.list.first_child().expect("a row");
+        assert!(row.is_sensitive(), "anything played before can be played again");
+
+        // Unlike the queue, this needs no context: a track is played on its own.
+        assert!(state.spotify.context.is_none());
+
+        state.caps.can_transfer = false;
+        ui.render(state);
+        assert!(!ui.recent.list.first_child().unwrap().is_sensitive());
+
+        state.spotify.recent.clear();
+        state.caps.can_transfer = false;
+        state.spotify.authorized = false;
+    }
+
     fn check_lyrics(ui: &Ui, state: &mut State) {
         let position = |state: &mut State, ms: u64| {
             state.player.as_mut().expect("a player").position_ms = ms;
@@ -1942,7 +2029,7 @@ mod tests {
 
         let sensitive = |ui: &Ui| {
             let mut out = Vec::new();
-            let mut child = ui.queue_list.first_child();
+            let mut child = ui.queue.list.first_child();
             while let Some(row) = child {
                 out.push(row.is_sensitive());
                 child = row.next_sibling();
