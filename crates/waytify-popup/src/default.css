@@ -313,7 +313,8 @@
   opacity: 0.55;
 }
 
-/* What the track was played out of. Hidden when Spotify has nothing to say. */
+/* What the track was played out of, as a line rather than a control. Hidden
+ * when Spotify has nothing to say. */
 #waytify-popup .waytify-context .context-label {
   font-size: 0.7rem;
   font-weight: 600;

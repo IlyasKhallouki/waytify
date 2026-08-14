@@ -258,7 +258,8 @@ impl TrackSection {
 
 pub struct Ui {
     pub root: gtk4::Box,
-    context: gtk4::MenuButton,
+    context: gtk4::Box,
+    library: gtk4::MenuButton,
     context_label: gtk4::Label,
     context_name: gtk4::Label,
     playlist_list: gtk4::Box,
@@ -373,15 +374,22 @@ impl Ui {
         lines.append(&context_label);
         lines.append(&context_name);
 
-        // The line doubles as the way out of it. Where you are playing from and
-        // where you could play from instead are the same question asked twice.
-        let context = gtk4::MenuButton::new();
+        // A line, not a control. It says where playback came from. Hanging the
+        // playlist picker off it meant clicking the label that answers one
+        // question silently asked another, which is not what a label is for.
+        let context = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
         context.add_css_class("waytify-context");
-        context.add_css_class("flat");
-        context.set_child(Some(&lines));
-        // Not hexpand. Stretched across the window with no playlist name in it,
-        // the filled state of an open menu button reads as an empty text field.
+        context.append(&lines);
         context.set_halign(gtk4::Align::Start);
+
+        // The picker gets a button of its own, next to search: both are ways to
+        // start something else, and neither belongs on top of the line that
+        // says what is already playing.
+        let library = gtk4::MenuButton::new();
+        library.set_icon_name("view-list-symbolic");
+        library.set_tooltip_text(Some("Your playlists"));
+        library.add_css_class("library");
+        library.add_css_class("flat");
 
         let playlists = gtk4::Popover::new();
         playlists.add_css_class("waytify-playlists");
@@ -392,7 +400,7 @@ impl Ui {
         playlist_scroll.set_propagate_natural_height(true);
         playlist_scroll.set_child(Some(&playlist_list));
         playlists.set_child(Some(&playlist_scroll));
-        context.set_popover(Some(&playlists));
+        library.set_popover(Some(&playlists));
 
         {
             let client = Rc::clone(&client);
@@ -625,7 +633,13 @@ impl Ui {
             });
         }
 
+        // The line on the left, the two ways to play something else on the
+        // right, where they were.
+        let spacer = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+        spacer.set_hexpand(true);
         top.append(&context);
+        top.append(&spacer);
+        top.append(&library);
         top.append(&search);
         root.append(&top);
         root.append(&header);
@@ -640,6 +654,7 @@ impl Ui {
         let ui = Self {
             root,
             context,
+            library,
             context_label,
             context_name,
             playlist_list,
@@ -1015,8 +1030,8 @@ impl Ui {
         // playing from anywhere: that is exactly when you most want the list.
         let switchable = state.caps.can_transfer;
         let context = state.spotify.context.as_ref();
-        self.context.set_visible(switchable || context.is_some());
-        self.context.set_sensitive(switchable);
+        self.context.set_visible(context.is_some());
+        self.library.set_visible(switchable);
 
         match context {
             Some(context) => {
@@ -1028,7 +1043,7 @@ impl Ui {
                 self.context_name.set_visible(!context.name.is_empty());
             }
             None => {
-                self.context_label.set_text("Play from");
+                self.context_label.set_text("");
                 self.context_name.set_visible(false);
             }
         }
@@ -1154,7 +1169,7 @@ impl Ui {
 
             let client = Rc::clone(&self.client);
             let uri = playlist.uri.clone();
-            let popover = self.context.popover();
+            let popover = self.library.popover();
             row.connect_clicked(move |_| {
                 client.send(Command::PlayContext { uri: uri.clone() });
                 if let Some(popover) = &popover {
@@ -1940,20 +1955,21 @@ mod tests {
         state.caps.can_transfer = true;
         ui.render(&state);
         assert!(ui.context.is_visible());
-        assert!(ui.context.is_sensitive());
 
+        // The line says where playback came from and nothing else. With nothing
+        // playing from anywhere it has nothing to say and goes.
         state.spotify.context = None;
         ui.render(&state);
-        assert!(ui.context.is_visible(), "still offered with nothing playing from anywhere");
-        assert_eq!(ui.context_label.text(), "Play from");
-        assert!(!ui.context_name.is_visible(), "and no name, rather than an empty line");
+        assert!(!ui.context.is_visible());
 
-        // A free account cannot write to /me/player, so the list would only
-        // fail. Shown and inert rather than vanishing, since its absence would
-        // read as the feature not existing.
+        // The picker is a button of its own, so it is there whether or not
+        // anything is playing, which is when you most want it.
+        assert!(ui.library.is_visible());
+
+        // A free account cannot write to /me/player, so it would only fail.
         state.caps.can_transfer = false;
         ui.render(&state);
-        assert!(!ui.context.is_sensitive());
+        assert!(!ui.library.is_visible());
 
         state.caps.can_transfer = true;
         state.spotify.playlists = vec![

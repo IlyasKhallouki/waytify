@@ -458,9 +458,25 @@ impl Engine {
                     self.publish();
                 }
             }
-            PlayerEvent::Context(context) => {
+            PlayerEvent::Context(mut context) => {
                 if !current_is_spotify(&self.state) {
                     return;
+                }
+                // Spotify has no live endpoint for an album, an artist or a
+                // show, only for their contents. It does not need one: the
+                // track that is playing already says which album and which
+                // artist it came from, and that is the same answer without a
+                // request.
+                if let (Some(c), Some(track)) = (context.as_mut(), self.state.track())
+                    && c.name.is_empty()
+                {
+                    c.name = match c.kind {
+                        waytify_ipc::ContextKind::Album => track.album.clone().unwrap_or_default(),
+                        waytify_ipc::ContextKind::Artist => track.artist_line(),
+                        // For an episode the show is where the album would be.
+                        waytify_ipc::ContextKind::Show => track.album.clone().unwrap_or_default(),
+                        _ => String::new(),
+                    };
                 }
                 if self.state.spotify.context != context {
                     // What was in the last one does not belong to this one, and
@@ -1214,6 +1230,17 @@ impl Engine {
                         tracing::warn!("could not start that: {e:#}");
                     }
                 });
+            }
+            Command::ReloadSpotify => {
+                self.restore_spotify().await;
+                // Whatever the old token could not do is no longer the answer.
+                self.state.spotify.needs_login = false;
+                self.state.spotify.library_available = true;
+                self.recompute_caps();
+                self.publish();
+                // The lists that were refused are worth having now.
+                self.request_playlists();
+                self.request_devices();
             }
             Command::RefreshPlaylists => self.request_playlists(),
             Command::RefreshRecent => self.request_recent(),

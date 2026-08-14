@@ -251,8 +251,16 @@ impl Client {
     }
 
     /// Adopt a stored refresh token, exchanging it for a usable access token.
+    ///
+    /// Clears what the previous token could not do. A fresh login is the fix
+    /// for both a missing scope and a library Spotify would not open, so
+    /// carrying either of those over would hide the features the login just
+    /// unlocked.
     pub async fn restore(&mut self, refresh_token: &str) -> Result<()> {
         self.tokens = Some(auth::refresh(&self.client_id, refresh_token).await?);
+        self.scope_missing = false;
+        self.library_forbidden = false;
+        self.premium = None;
         Ok(())
     }
 
@@ -687,18 +695,22 @@ impl Client {
             return known(name.clone());
         }
 
-        // The kind is already known and worth saying on its own. Everything
-        // below is an attempt to add a name to it, and failing at that is not a
-        // reason to claim playback came from nowhere.
+        // Only a playlist is asked about. An album, an artist and a show all
+        // have live endpoints for their tracks and none for themselves: the
+        // object lookups, single and batched alike, are deprecated. Their names
+        // are already on the track that is playing, so the caller fills those
+        // in without a request at all.
+        if context.kind != waytify_ipc::ContextKind::Playlist {
+            return known(String::new());
+        }
+
+        // The kind is already known and worth saying on its own. What follows is
+        // an attempt to add a name to it, and failing at that is not a reason to
+        // claim playback came from nowhere.
         let Some(href) = context.href else { return known(String::new()) };
 
-        // Ask for the name alone where the endpoint allows it. A playlist object
-        // is otherwise its entire track list.
-        let path = href.strip_prefix(API).unwrap_or(&href).to_string();
-        let path = match context.kind {
-            waytify_ipc::ContextKind::Playlist => format!("{path}?fields=name"),
-            _ => path,
-        };
+        // Just the name. A playlist object is otherwise its entire track list.
+        let path = format!("{}?fields=name", href.strip_prefix(API).unwrap_or(&href));
 
         let name = match self.get_json::<Named>(&path).await {
             Ok(named) => named.name,

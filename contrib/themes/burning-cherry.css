@@ -63,35 +63,10 @@
 
 /* -------------------------------------------------------------- the context */
 
-/* What you picked to listen to, as opposed to what is playing right now. It is
- * also the way to change it, so it behaves as a button without looking like
- * one until you go near it. */
+/* What you picked to listen to, as opposed to what is playing right now. A
+ * line, not a control. */
 .waytify-context {
-  background: none;
-  border: none;
-  border-radius: 8px;
-  padding: 2px 4px;
   margin-bottom: 2px;
-  transition: background-color 200ms ease;
-}
-
-.waytify-context:hover {
-  background-color: alpha(@ink, 0.06);
-}
-
-/* GTK fills a menu button while its popover is open, which on a full width
- * control reads as an empty text field rather than as a pressed button. */
-.waytify-context:checked,
-.waytify-context:active {
-  background-color: alpha(@pink, 0.12);
-  box-shadow: none;
-}
-
-/* Only as wide as it needs to be. Stretched across the window it looked like
- * an input waiting to be typed into. */
-.waytify-context .context-label,
-.waytify-context .context-name {
-  padding-right: 8px;
 }
 
 .waytify-context .context-label {
@@ -558,7 +533,8 @@
   padding: 6px;
 }
 
-/* Search: the other half of "play something else". */
+/* The two ways to play something else, side by side at the top right. */
+#waytify-popup .library,
 #waytify-popup .search {
   color: alpha(@ink, 0.5);
   background: none;
@@ -567,6 +543,7 @@
   transition: color 200ms ease;
 }
 
+#waytify-popup .library:hover,
 #waytify-popup .search:hover {
   color: @pink;
 }

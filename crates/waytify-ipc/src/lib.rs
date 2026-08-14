@@ -142,6 +142,12 @@ pub enum Command {
     PlayContext {
         uri: String,
     },
+    /// Adopt the stored Spotify credentials again.
+    ///
+    /// Sent by `waytify login` once the new token is saved. A running daemon
+    /// holds the token it started with, so without this a login only takes
+    /// effect at the next restart, which is a thing nobody should have to know.
+    ReloadSpotify,
     /// Fetch the user's playlists. Asked for when the picker opens.
     RefreshPlaylists,
     /// Fetch what was played recently. Asked for when the list is opened.

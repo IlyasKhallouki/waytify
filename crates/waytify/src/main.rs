@@ -182,7 +182,16 @@ async fn dispatch(cli: Cli) -> Result<()> {
             let tokens =
                 waytify_core::spotify::auth::login(client_id, config.spotify.redirect_port).await?;
             waytify_core::spotify::auth::save_refresh_token(&tokens.refresh)?;
-            println!("Spotify connected. Restart the daemon with `waytify stop` to pick it up.");
+
+            // A running daemon holds the token it started with, so tell it to
+            // read the new one. Best effort: there may not be a daemon yet, and
+            // the next one to start will read the token anyway.
+            match waytify_bar::send(waytify_ipc::Command::ReloadSpotify).await {
+                Ok(()) => println!("Spotify connected."),
+                Err(_) => {
+                    println!("Spotify connected. It will be used the next time waytify starts.")
+                }
+            }
             return Ok(());
         }
         Role::Logout => {

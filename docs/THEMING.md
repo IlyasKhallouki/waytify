@@ -53,8 +53,9 @@ anything, and the window does not even need to be closed.
 ```
 #waytify-window                     the layer-shell window, transparent
 └── #waytify-popup                  the panel: background, radius, padding
+    ├── .library                    opens the playlist picker
     ├── .search                     opens the search popover
-    ├── .waytify-context            a GtkMenuButton opening the playlist picker
+    ├── .waytify-context            a line, not a control
     │   ├── .context-label          "Playing from playlist", or "Play from"
     │   └── .context-name           hidden when Spotify will not name it
     ├── .waytify-header
