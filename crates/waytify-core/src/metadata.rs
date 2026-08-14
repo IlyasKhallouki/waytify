@@ -27,7 +27,7 @@ pub fn track_from_metadata(md: &Metadata) -> Option<Track> {
     let artists = get_strings(md, "xesam:artist");
     let artists = if artists.is_empty() { get_strings(md, "xesam:albumArtist") } else { artists };
 
-    Some(Track {
+    let mut track = Track {
         id: get_string(md, "mpris:trackid"),
         title,
         artists,
@@ -39,7 +39,12 @@ pub fn track_from_metadata(md: &Metadata) -> Option<Track> {
         colors: None,
         liked: None,
         url: get_string(md, "xesam:url"),
-    })
+        kind: waytify_ipc::MediaKind::Music,
+    };
+    if is_podcast(&track) {
+        track.kind = waytify_ipc::MediaKind::Podcast;
+    }
+    Some(track)
 }
 
 /// Older Spotify builds hand out `open.spotify.com/image/<hash>` in `mpris:artUrl`,
@@ -52,6 +57,18 @@ pub fn normalize_art_url(url: &str) -> String {
         Some(hash) => format!("https://i.scdn.co/image/{hash}"),
         None => url.to_string(),
     }
+}
+
+/// Whether what is playing is a podcast episode rather than a song.
+///
+/// Spotify labels episodes in both the ids it publishes over MPRIS, so this
+/// needs no network call and works the moment the track changes. Checked in
+/// both places because which one a given client version fills in has moved
+/// around before.
+pub fn is_podcast(track: &waytify_ipc::Track) -> bool {
+    let marks_episode = |s: &str| s.contains(":episode:") || s.contains("/episode/");
+    track.id.as_deref().is_some_and(marks_episode)
+        || track.url.as_deref().is_some_and(marks_episode)
 }
 
 /// The Spotify catalogue id for a track, when this looks like a Spotify track.
@@ -226,6 +243,39 @@ mod tests {
     fn other_art_urls_pass_through_untouched() {
         let file = "file:///home/u/.cache/art/cover.png";
         assert_eq!(normalize_art_url(file), file);
+    }
+
+    #[test]
+    fn an_episode_is_told_apart_from_a_song() {
+        use waytify_ipc::MediaKind;
+
+        let episode_by_id =
+            Track { id: Some("spotify:episode:5vHwCgvNqDDPLTAfsvOTGw".into()), ..Track::default() };
+        assert!(is_podcast(&episode_by_id));
+
+        let episode_by_url = Track {
+            url: Some("https://open.spotify.com/episode/5vHwCgvNqDDPLTAfsvOTGw".into()),
+            ..Track::default()
+        };
+        assert!(is_podcast(&episode_by_url));
+
+        // Both places are checked because which one a given Spotify build fills
+        // in has moved before, and getting this wrong costs a song its lyrics
+        // and its like button.
+        let song = Track {
+            id: Some("spotify:track:4uLU6hMCjMI75M1A2tKUQC".into()),
+            url: Some("https://open.spotify.com/track/4uLU6hMCjMI75M1A2tKUQC".into()),
+            ..Track::default()
+        };
+        assert!(!is_podcast(&song));
+        assert!(!is_podcast(&Track::default()), "nothing playing is not a podcast");
+
+        // A local file whose path happens to contain the word is still a song.
+        let awkward =
+            Track { url: Some("file:///home/me/podcasts/song.mp3".into()), ..Track::default() };
+        assert!(!is_podcast(&awkward));
+
+        assert_eq!(MediaKind::default(), MediaKind::Music, "the safe default");
     }
 
     #[test]

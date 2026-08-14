@@ -56,6 +56,8 @@ enum PlayerEvent {
     LibraryUnavailable,
     /// What is coming up next, as far as Spotify will say.
     Queue(Vec<waytify_ipc::Track>),
+    /// The playlist or album the current track came out of.
+    Context(Option<waytify_ipc::PlayContext>),
     /// Lyrics finished downloading, or turned out not to exist. Carries the key
     /// they were fetched for, since the track can change while a request is out.
     Lyrics {
@@ -256,6 +258,7 @@ impl Engine {
                 if opened {
                     self.request_devices();
                     self.request_queue();
+                    self.request_context();
                     self.request_lyrics();
                 }
             }
@@ -368,6 +371,7 @@ impl Engine {
         }
         self.state.player = None;
         self.state.spotify.queue.clear();
+        self.state.spotify.context = None;
         self.state.lyrics = None;
         self.clock.set_playing(false, Instant::now());
         self.publish();
@@ -405,6 +409,7 @@ impl Engine {
         self.request_artwork();
         self.request_liked();
         self.request_queue();
+        self.request_context();
         self.request_lyrics();
         self.publish();
         Ok(())
@@ -438,6 +443,15 @@ impl Engine {
                 }
                 if self.state.lyrics != lyrics {
                     self.state.lyrics = lyrics;
+                    self.publish();
+                }
+            }
+            PlayerEvent::Context(context) => {
+                if !current_is_spotify(&self.state) {
+                    return;
+                }
+                if self.state.spotify.context != context {
+                    self.state.spotify.context = context;
                     self.publish();
                 }
             }
@@ -588,6 +602,35 @@ impl Engine {
         });
     }
 
+    /// Ask Spotify what the current track is being played out of.
+    ///
+    /// Same rules as the queue: only with the window open, only when Spotify is
+    /// what is playing. A playlist name belongs to Spotify's idea of playback,
+    /// not to whatever MPRIS player happens to be attached.
+    fn request_context(&mut self) {
+        if !current_is_spotify(&self.state) {
+            if self.state.spotify.context.take().is_some() {
+                self.publish();
+            }
+            return;
+        }
+        if self.attention != Attention::Popup {
+            return;
+        }
+        let Some(client) = &self.spotify else { return };
+        let client = Arc::clone(client);
+        let events = self.events_tx.clone();
+
+        tokio::spawn(async move {
+            match client.lock().await.context().await {
+                Ok(context) => {
+                    let _ = events.send(PlayerEvent::Context(context)).await;
+                }
+                Err(e) => tracing::debug!("could not read the playing context: {e:#}"),
+            }
+        });
+    }
+
     /// Refresh the Connect device list.
     ///
     /// Only called while the window is open. There is no push channel for this,
@@ -654,6 +697,12 @@ impl Engine {
             return;
         }
         let Some(track) = self.state.track() else { return };
+        // An episode has no lyrics, and asking lrclib about one by its title
+        // spends somebody else's bandwidth on a guaranteed miss that then gets
+        // cached for a week.
+        if track.kind == waytify_ipc::MediaKind::Podcast {
+            return;
+        }
         let Some(key) = crate::lyrics::key_for(track) else { return };
 
         let track = track.clone();
@@ -782,6 +831,7 @@ impl Engine {
             self.request_artwork();
             self.request_liked();
             self.request_queue();
+            self.request_context();
             self.request_lyrics();
             self.publish();
         }
@@ -880,8 +930,13 @@ impl Engine {
             // Not merely "a track is playing": liking needs a Spotify catalogue
             // id, and a YouTube video in a browser tab has none. Showing the
             // control for one would be offering something that can only fail.
+            //
+            // Episodes are excluded for the same reason. Spotify saves them
+            // through a different endpoint from tracks, so the button would
+            // reach for the wrong one.
             can_like: self.state.spotify.authorized
                 && self.state.spotify.library_available
+                && self.state.track().map(|t| t.kind) != Some(waytify_ipc::MediaKind::Podcast)
                 && self.state.track().and_then(crate::metadata::spotify_track_id).is_some(),
             can_transfer: self.state.spotify.can_control_remote(),
             can_set_volume: self.state.audio.route != waytify_ipc::VolumeRoute::Unavailable,

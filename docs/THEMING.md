@@ -53,14 +53,19 @@ anything, and the window does not even need to be closed.
 ```
 #waytify-window                     the layer-shell window, transparent
 └── #waytify-popup                  the panel: background, radius, padding
+    ├── .waytify-context            hidden unless Spotify says where from
+    │   ├── .context-label          "Playing from playlist"
+    │   └── .context-name           the playlist or album itself
     ├── .waytify-header
     │   ├── .waytify-art            cover image
     │   │   └── .art-missing        stands in when there is no cover
     │   ├── .waytify-meta
     │   │   ├── .track-title
+    │   │   ├── .kind-badge         shown only for a podcast episode
     │   │   ├── .track-artist
-    │   │   └── .track-album
+    │   │   └── .track-album        gains .show-name for an episode
     │   └── .like                   hidden unless the track is savable
+    │                               gains .saved once it is
     ├── .waytify-scrubber
     │   ├── .elapsed
     │   ├── .scrubber               a GtkScale: trough, highlight, slider
@@ -118,6 +123,16 @@ Nothing scrolls when the window is hidden or when the change was not a step of
 one line. A seek or a new track is written straight in, because sliding four
 lines in a third of a second is a blur and sliding backwards is a lie about
 what happened.
+
+The save button is a plus in a ring, becoming a tick on a filled disc when the
+track is saved. Both shapes come from the stylesheet rather than from the icon,
+so a theme is free to redraw them and an icon theme without a combined
+plus-in-a-circle glyph costs nothing. `.saved` is what the two states differ by.
+
+`#waytify-popup` gains `podcast` when an episode is playing, and so does the bar
+module, so a stylesheet can mark one without waytify choosing an icon on its
+behalf. waytify also stops looking for lyrics and hides the save button for an
+episode: Spotify saves episodes through a different endpoint from tracks.
 
 Repeat carries exactly one of `.off`, `.all` and `.one`, matching the three
 states the Spotify client cycles through. `.one` also asks for the

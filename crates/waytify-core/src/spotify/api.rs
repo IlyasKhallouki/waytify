@@ -39,6 +39,33 @@ struct Me {
 }
 
 #[derive(Debug, Deserialize)]
+struct Playback {
+    #[serde(default)]
+    context: Option<PlaybackContext>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PlaybackContext {
+    #[serde(rename = "type")]
+    kind: waytify_ipc::ContextKind,
+    /// Where to ask for the name. Spotify does not include it here.
+    href: Option<String>,
+    uri: Option<String>,
+    #[serde(default)]
+    external_urls: ExternalUrls,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct ExternalUrls {
+    spotify: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Named {
+    name: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct Queue {
     queue: Vec<Item>,
 }
@@ -66,6 +93,9 @@ pub struct Client {
     /// Set when Spotify has told us to back off, and honoured until it passes.
     throttled_until: Option<Instant>,
     premium: Option<bool>,
+    /// Context names by uri, so playing a whole playlist asks once rather than
+    /// once per track.
+    context_names: std::collections::HashMap<String, String>,
     /// Set when Spotify refuses a library call outright.
     ///
     /// It means this token cannot read or change saved tracks at all, usually
@@ -84,6 +114,7 @@ impl Client {
             next_allowed: Instant::now(),
             throttled_until: None,
             premium: None,
+            context_names: std::collections::HashMap::new(),
             library_forbidden: false,
         })
     }
@@ -286,6 +317,57 @@ impl Client {
         self.player_write(reqwest::Method::PUT, &path, None).await
     }
 
+    /// What the current track is being played out of.
+    ///
+    /// Two requests the first time and one after that: `/me/player` says which
+    /// playlist or album it is, by uri, and nothing else. The name has to be
+    /// fetched separately and is then remembered, because it does not change and
+    /// every track in an album would otherwise ask again.
+    pub async fn context(&mut self) -> Result<Option<waytify_ipc::PlayContext>> {
+        let response = self.request(reqwest::Method::GET, "/me/player", None).await?;
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+
+        // 204 with an empty body means nothing is playing, same as the queue.
+        if status == reqwest::StatusCode::NO_CONTENT || body.trim().is_empty() {
+            return Ok(None);
+        }
+        if !status.is_success() {
+            bail!("Spotify returned {status} for playback: {body}");
+        }
+
+        let playback: Playback =
+            serde_json::from_str(&body).context("unexpected response from /me/player")?;
+        // Playing a single track from a search has no context at all, which is
+        // an answer rather than a failure.
+        let Some(context) = playback.context else { return Ok(None) };
+        let url = context.external_urls.spotify;
+
+        let uri = context.uri.unwrap_or_default();
+        if let Some(name) = self.context_names.get(&uri) {
+            return Ok(Some(waytify_ipc::PlayContext {
+                kind: context.kind,
+                name: name.clone(),
+                url,
+            }));
+        }
+
+        let Some(href) = context.href else { return Ok(None) };
+        // Ask for the name alone where the endpoint allows it. A playlist object
+        // is otherwise its entire track list.
+        let path = href.strip_prefix(API).unwrap_or(&href).to_string();
+        let path = match context.kind {
+            waytify_ipc::ContextKind::Playlist => format!("{path}?fields=name"),
+            _ => path,
+        };
+        let named: Named = self.get_json(&path).await?;
+
+        if !uri.is_empty() {
+            self.context_names.insert(uri, named.name.clone());
+        }
+        Ok(Some(waytify_ipc::PlayContext { kind: context.kind, name: named.name, url }))
+    }
+
     /// What is coming up, as far as Spotify will say.
     pub async fn queue(&mut self) -> Result<Vec<waytify_ipc::Track>> {
         let response = self.request(reqwest::Method::GET, "/me/player/queue", None).await?;
@@ -349,6 +431,48 @@ mod tests {
         // Spotify really does return devices with no id, which cannot be
         // transferred to and must not be offered as if they could.
         assert!(parsed.devices[1].id.is_none());
+    }
+
+    #[test]
+    fn a_playing_context_parses_and_an_absent_one_is_not_an_error() {
+        use waytify_ipc::ContextKind;
+
+        let json = r#"{"context":{"type":"playlist",
+            "href":"https://api.spotify.com/v1/playlists/37i9dQZF1DXcBWIGoYBM5M",
+            "uri":"spotify:playlist:37i9dQZF1DXcBWIGoYBM5M",
+            "external_urls":{"spotify":"https://open.spotify.com/playlist/37i9"}}}"#;
+        let playback: Playback = serde_json::from_str(json).unwrap();
+        let context = playback.context.unwrap();
+        assert_eq!(context.kind, ContextKind::Playlist);
+        assert_eq!(
+            context.external_urls.spotify.as_deref(),
+            Some("https://open.spotify.com/playlist/37i9")
+        );
+
+        // Playing a single track out of a search has no context, and Spotify
+        // says so with a null rather than by omitting the field.
+        let none: Playback = serde_json::from_str(r#"{"context":null}"#).unwrap();
+        assert!(none.context.is_none());
+        let missing: Playback = serde_json::from_str("{}").unwrap();
+        assert!(missing.context.is_none());
+
+        // A kind added after this was written still counts as playing from
+        // something, rather than failing the whole response.
+        let odd = r#"{"context":{"type":"audiobook","href":null,"uri":null}}"#;
+        let odd: Playback = serde_json::from_str(odd).unwrap();
+        assert_eq!(odd.context.unwrap().kind, ContextKind::Other);
+
+        // Every kind has something to introduce it with.
+        for kind in [
+            ContextKind::Playlist,
+            ContextKind::Album,
+            ContextKind::Artist,
+            ContextKind::Show,
+            ContextKind::Collection,
+            ContextKind::Other,
+        ] {
+            assert!(!kind.label().is_empty());
+        }
     }
 
     #[test]

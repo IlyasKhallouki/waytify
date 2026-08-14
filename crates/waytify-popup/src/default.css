@@ -312,3 +312,39 @@
 #waytify-popup .waytify-transport .repeat.off {
   opacity: 0.55;
 }
+
+/* What the track was played out of. Hidden when Spotify has nothing to say. */
+#waytify-popup .waytify-context .context-label {
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  opacity: 0.45;
+}
+
+#waytify-popup .waytify-context .context-name {
+  font-size: 0.85rem;
+  opacity: 0.8;
+}
+
+/* An episode is not a song. */
+#waytify-popup .kind-badge {
+  opacity: 0.5;
+}
+
+/* Save: a plus in a ring, a tick on a filled disc once saved. The shapes are
+ * here rather than in the icon, so a theme missing a plus-in-a-circle glyph
+ * still gets the right control. */
+#waytify-popup .like {
+  border: 1px solid alpha(currentColor, 0.5);
+  border-radius: 50%;
+  min-width: 22px;
+  min-height: 22px;
+  padding: 0;
+}
+
+#waytify-popup .like.saved {
+  background-color: #1db954;
+  border-color: #1db954;
+  color: #000000;
+}

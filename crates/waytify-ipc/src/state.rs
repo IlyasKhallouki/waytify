@@ -107,6 +107,61 @@ impl Rgb {
     }
 }
 
+/// What sort of thing is playing.
+///
+/// Podcasts are not songs and the window should not pretend otherwise: they have
+/// no lyrics to look up, and saving one is a different Spotify endpoint from
+/// saving a track.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MediaKind {
+    #[default]
+    Music,
+    Podcast,
+}
+
+/// Where playback is coming from, when Spotify says.
+///
+/// MPRIS has no idea about this. A player knows what it is playing, not what it
+/// was picked out of.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlayContext {
+    pub kind: ContextKind,
+    pub name: String,
+    /// Opens it in the real client.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextKind {
+    Playlist,
+    Album,
+    Artist,
+    Show,
+    /// Your saved songs, which Spotify calls a collection.
+    Collection,
+    /// Something added after this was written. Named rather than dropped, since
+    /// "playing from something" is still worth showing.
+    #[serde(other)]
+    Other,
+}
+
+impl ContextKind {
+    /// How to introduce it, as the real client does.
+    pub fn label(self) -> &'static str {
+        match self {
+            ContextKind::Playlist => "Playing from playlist",
+            ContextKind::Album => "Playing from album",
+            ContextKind::Artist => "Playing from artist",
+            ContextKind::Show => "Playing from podcast",
+            ContextKind::Collection => "Playing from liked songs",
+            ContextKind::Other => "Playing from",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Track {
     /// MPRIS `mpris:trackid`. Used as the cache key for art, lyrics, and like state.
@@ -135,6 +190,14 @@ pub struct Track {
     /// `xesam:url`, so the popup can offer to open the track in the real client.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+    /// Music unless something says otherwise, which is the safe way round: a
+    /// song mislabelled as a podcast loses its lyrics and its like button.
+    #[serde(default, skip_serializing_if = "is_music")]
+    pub kind: MediaKind,
+}
+
+fn is_music(kind: &MediaKind) -> bool {
+    *kind == MediaKind::Music
 }
 
 impl Track {
@@ -237,6 +300,9 @@ pub struct Spotify {
     /// Id of the device playback is currently on, when Spotify reports one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_device: Option<String>,
+    /// Full scope only. What the current track was played out of.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<PlayContext>,
 }
 
 impl Default for Spotify {
@@ -248,13 +314,17 @@ impl Default for Spotify {
             queue: Vec::new(),
             library_available: true,
             active_device: None,
+            context: None,
         }
     }
 }
 
 impl Spotify {
     pub fn is_empty(&self) -> bool {
-        !self.authorized && self.devices.is_empty() && self.queue.is_empty()
+        !self.authorized
+            && self.devices.is_empty()
+            && self.queue.is_empty()
+            && self.context.is_none()
     }
 
     /// True when writes to `/me/player/*` are expected to succeed.
@@ -354,6 +424,12 @@ impl State {
         }
         if self.track().and_then(|t| t.liked) == Some(true) {
             out.push("liked".into());
+        }
+        // Reaches the bar as well as the window, so a Waybar stylesheet can mark
+        // an episode differently from a song without waytify choosing an icon
+        // on its behalf.
+        if self.track().map(|t| t.kind) == Some(MediaKind::Podcast) {
+            out.push("podcast".into());
         }
         out
     }

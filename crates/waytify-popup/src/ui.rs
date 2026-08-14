@@ -53,9 +53,14 @@ const QUEUE_ROWS: usize = 5;
 
 pub struct Ui {
     pub root: gtk4::Box,
+    context: gtk4::Box,
+    context_label: gtk4::Label,
+    context_name: gtk4::Label,
     art: gtk4::Image,
     art_placeholder: gtk4::Box,
     title: gtk4::Label,
+    /// A small mark next to the title saying this is an episode, not a song.
+    kind_badge: gtk4::Image,
     artist: gtk4::Label,
     album: gtk4::Label,
     elapsed: gtk4::Label,
@@ -143,6 +148,16 @@ impl Ui {
         let root = gtk4::Box::new(gtk4::Orientation::Vertical, 14);
         root.set_widget_name("waytify-popup");
 
+        // Above everything, the way the real client puts it. What you are
+        // listening to is a different question from what you picked to listen
+        // to, and the second one is the easier of the two to lose track of.
+        let context = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        context.add_css_class("waytify-context");
+        let context_label = label("context-label");
+        let context_name = label("context-name");
+        context.append(&context_label);
+        context.append(&context_name);
+
         // Header: art beside the track's identity.
         let header = gtk4::Box::new(gtk4::Orientation::Horizontal, 14);
         header.add_css_class("waytify-header");
@@ -170,11 +185,21 @@ impl Ui {
         let title = label("track-title");
         let artist = label("track-artist");
         let album = label("track-album");
-        meta.append(&title);
+        let title_row = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
+        let kind_badge = gtk4::Image::from_icon_name("audio-input-microphone-symbolic");
+        kind_badge.add_css_class("kind-badge");
+        kind_badge.set_visible(false);
+        title_row.append(&title);
+        title_row.append(&kind_badge);
+        meta.append(&title_row);
         meta.append(&artist);
         meta.append(&album);
 
-        let like = gtk4::Button::from_icon_name("non-starred-symbolic");
+        // A plus in a ring, becoming a tick on a filled disc, the way the real
+        // client marks a saved track. The ring and the disc are the stylesheet's
+        // work: an icon theme that happens to lack a plus-in-a-circle glyph then
+        // costs nothing, since only the plus and the tick have to exist.
+        let like = gtk4::Button::from_icon_name("list-add-symbolic");
         like.add_css_class("like");
         like.add_css_class("flat");
         like.set_valign(gtk4::Align::Center);
@@ -334,6 +359,7 @@ impl Ui {
         queue.append(&queue_toggle);
         queue.append(&queue_list);
 
+        root.append(&context);
         root.append(&header);
         root.append(&scrub_row);
         root.append(&volume_row);
@@ -343,9 +369,13 @@ impl Ui {
 
         let ui = Self {
             root,
+            context,
+            context_label,
+            context_name,
             art,
             art_placeholder,
             title,
+            kind_badge,
             artist,
             album,
             elapsed,
@@ -568,12 +598,16 @@ impl Ui {
         // unauthorized heart that does nothing is worse than no heart.
         let liked = state.track().and_then(|t| t.liked);
         self.like.set_visible(state.caps.can_like);
-        self.like.set_icon_name(if liked == Some(true) {
-            "starred-symbolic"
+        let saved = liked == Some(true);
+        self.like.set_icon_name(if saved { "object-select-symbolic" } else { "list-add-symbolic" });
+        if saved {
+            self.like.add_css_class("saved");
         } else {
-            "non-starred-symbolic"
-        });
+            self.like.remove_css_class("saved");
+        }
 
+        self.render_context(state);
+        self.render_kind(state);
         self.render_audio(state);
         self.render_lyrics(state, self.position());
         self.render_queue(state);
@@ -693,6 +727,36 @@ impl Ui {
         self.binding.set(false);
 
         self.highlight_line(position);
+    }
+
+    /// Show what the current track was played out of.
+    ///
+    /// Hidden rather than blank when there is nothing to say, which is the
+    /// common case: a track played from a search has no context, and neither
+    /// does anything that is not Spotify.
+    fn render_context(&self, state: &State) {
+        let context = state.spotify.context.as_ref();
+        self.context.set_visible(context.is_some());
+        let Some(context) = context else { return };
+
+        self.context_label.set_text(context.kind.label());
+        self.context_name.set_text(&context.name);
+    }
+
+    /// Mark an episode as one.
+    ///
+    /// Only the badge is decided here. The root carries a `podcast` class as
+    /// well, so a stylesheet can go further without waytify guessing how far.
+    fn render_kind(&self, state: &State) {
+        let podcast = state.track().map(|t| t.kind) == Some(waytify_ipc::MediaKind::Podcast);
+        self.kind_badge.set_visible(podcast);
+        // The album line holds the show's name for an episode, which is worth
+        // more than an album is for a song.
+        if podcast {
+            self.album.add_css_class("show-name");
+        } else {
+            self.album.remove_css_class("show-name");
+        }
     }
 
     fn render_lyrics(&self, state: &State, position_ms: u64) {
@@ -1222,6 +1286,7 @@ mod tests {
 
         check_stylesheets();
         check_repeat(&ui);
+        check_context_and_kind(&ui);
         check_a_step_rotates_rather_than_restyling(&ui);
         check_art_colors_cross_providers(&ui);
         check_lyrics(&ui, &mut state);
@@ -1375,6 +1440,55 @@ mod tests {
         // than one that lies about being off.
         ui.render_repeat(None);
         assert!(!ui.repeat.is_visible());
+    }
+
+    /// The context line and the episode badge.
+    fn check_context_and_kind(ui: &Ui) {
+        use waytify_ipc::{ContextKind, MediaKind, PlayContext};
+
+        let song = |kind: MediaKind| State {
+            player: Some(Player {
+                bus_name: "org.mpris.MediaPlayer2.spotify".into(),
+                identity: "Spotify".into(),
+                status: Status::Playing,
+                track: Some(Track { title: "Something".into(), kind, ..Default::default() }),
+                position_ms: 0,
+                shuffle: None,
+                repeat: None,
+            }),
+            ..Default::default()
+        };
+
+        // Most playback has no context: a track from a search, or anything that
+        // is not Spotify. An empty line would be worse than none.
+        let mut state = song(MediaKind::Music);
+        ui.render(&state);
+        assert!(!ui.context.is_visible());
+        assert!(!ui.kind_badge.is_visible());
+
+        state.spotify.context =
+            Some(PlayContext { kind: ContextKind::Playlist, name: "Late night".into(), url: None });
+        ui.render(&state);
+        assert!(ui.context.is_visible());
+        assert_eq!(ui.context_label.text(), "Playing from playlist");
+        assert_eq!(ui.context_name.text(), "Late night");
+
+        // The label follows the kind, so an album does not claim to be a
+        // playlist.
+        state.spotify.context.as_mut().unwrap().kind = ContextKind::Album;
+        ui.render(&state);
+        assert_eq!(ui.context_label.text(), "Playing from album");
+
+        // An episode says so, and its show name is marked as one.
+        let podcast = song(MediaKind::Podcast);
+        ui.render(&podcast);
+        assert!(ui.kind_badge.is_visible());
+        assert!(ui.album.has_css_class("show-name"));
+        assert!(podcast.css_classes().contains(&"podcast".to_string()));
+
+        ui.render(&song(MediaKind::Music));
+        assert!(!ui.kind_badge.is_visible());
+        assert!(!ui.album.has_css_class("show-name"), "a song is not a show");
     }
 
     fn check_lyrics(ui: &Ui, state: &mut State) {

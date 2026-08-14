@@ -12,8 +12,8 @@ pub mod paths;
 pub mod state;
 
 pub use state::{
-    ArtColors, Audio, Caps, Device, LyricLine, Lyrics, Player, Repeat, Rgb, Spotify, State, Status,
-    Track, VolumeRoute,
+    ArtColors, Audio, Caps, ContextKind, Device, LyricLine, Lyrics, MediaKind, PlayContext, Player,
+    Repeat, Rgb, Spotify, State, Status, Track, VolumeRoute,
 };
 
 use serde::{Deserialize, Serialize};
