@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.6.1"
 edition = "2024"
 # gtk4 0.11 requires 1.92, so that is the real floor for a default build.
 rust-version = "1.92"
@@ -15,11 +15,11 @@ keywords = ["waybar", "mpris", "spotify", "wayland", "hyprland"]
 categories = ["command-line-utilities", "multimedia"]
 
 [workspace.dependencies]
-waytify-ipc = { path = "crates/waytify-ipc", version = "0.1.0" }
-waytify-core = { path = "crates/waytify-core", version = "0.1.0" }
-waytify-daemon = { path = "crates/waytify-daemon", version = "0.1.0" }
-waytify-bar = { path = "crates/waytify-bar", version = "0.1.0" }
-waytify-popup = { path = "crates/waytify-popup", version = "0.1.0" }
+waytify-ipc = { path = "crates/waytify-ipc", version = "0.6.1" }
+waytify-core = { path = "crates/waytify-core", version = "0.6.1" }
+waytify-daemon = { path = "crates/waytify-daemon", version = "0.6.1" }
+waytify-bar = { path = "crates/waytify-bar", version = "0.6.1" }
+waytify-popup = { path = "crates/waytify-popup", version = "0.6.1" }
 
 anyhow = "1"
 async-channel = "2"
