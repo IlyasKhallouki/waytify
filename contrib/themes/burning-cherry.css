@@ -542,3 +542,66 @@
   color: alpha(@ink, 0.4);
   padding: 6px;
 }
+
+/* Search: the other half of "play something else". */
+#waytify-popup .search {
+  color: alpha(@ink, 0.5);
+  background: none;
+  border: none;
+  padding: 4px 6px;
+  transition: color 200ms ease;
+}
+
+#waytify-popup .search:hover {
+  color: @pink;
+}
+
+.waytify-search > contents {
+  background-image: linear-gradient(160deg, alpha(@base, 0.98) 0%, alpha(@base_deep, 0.99) 100%);
+  border: 1px solid alpha(@pink, 0.3);
+  border-radius: 14px;
+  padding: 10px;
+  min-width: 300px;
+  box-shadow: 0 12px 32px alpha(#000000, 0.55);
+}
+
+.waytify-search > arrow {
+  background-color: @base;
+  border: 1px solid alpha(@pink, 0.3);
+}
+
+.waytify-search entry {
+  background-color: alpha(@ink, 0.06);
+  border: 1px solid alpha(@ink, 0.1);
+  border-radius: 9px;
+  color: @ink;
+  padding: 6px 8px;
+}
+
+.waytify-search entry:focus-within {
+  border-color: alpha(@pink, 0.55);
+}
+
+.waytify-search .search-result {
+  background: none;
+  background-image: none;
+  border: none;
+  box-shadow: none;
+  border-radius: 9px;
+  padding: 7px 10px;
+  transition: background-color 180ms ease;
+}
+
+.waytify-search .search-result:hover {
+  background-color: alpha(@pink, 0.14);
+}
+
+.waytify-search .search-name {
+  color: alpha(@ink, 0.9);
+}
+
+.waytify-search .search-subtitle,
+.waytify-search .search-empty {
+  font-size: 11px;
+  color: alpha(@ink, 0.42);
+}

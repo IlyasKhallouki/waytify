@@ -176,7 +176,8 @@ requested unless the window is actually on screen, and both hits and misses are
 cached.
 
 The line at the top says what you are playing out of, and clicking it lists your
-playlists so you can play something else. With a Spotify account connected the
+playlists so you can play something else. The magnifier beside it searches
+Spotify for songs, albums and playlists, and playing one is a click. With a Spotify account connected the
 window also lists what is playing next, folded away until you ask for it, and lets you move playback between Connect devices.
 Spotify only reports devices with a live session, so a phone with the app closed
 will not be listed even though the Spotify app itself shows it: the app does its

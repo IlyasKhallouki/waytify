@@ -13,7 +13,7 @@ pub mod state;
 
 pub use state::{
     ArtColors, Audio, Caps, ContextKind, Device, LyricLine, Lyrics, MediaKind, PlayContext, Player,
-    Playlist, Repeat, Rgb, Spotify, State, Status, Track, VolumeRoute,
+    Playlist, Repeat, Rgb, SearchKind, SearchResult, Spotify, State, Status, Track, VolumeRoute,
 };
 
 use serde::{Deserialize, Serialize};
@@ -144,6 +144,16 @@ pub enum Command {
     },
     /// Fetch the user's playlists. Asked for when the picker opens.
     RefreshPlaylists,
+    /// Search Spotify. An empty query clears the results rather than searching
+    /// for nothing.
+    Search {
+        query: String,
+    },
+    /// Play a single track, which is a different request from starting a
+    /// context.
+    PlayTrack {
+        uri: String,
+    },
     /// Ask Spotify for the device list now.
     ///
     /// It is polled while the window is open, but a device that has just been

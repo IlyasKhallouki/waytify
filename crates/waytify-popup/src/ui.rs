@@ -44,6 +44,12 @@ const LYRIC_ROWS: usize = 3;
 /// How long a line takes to travel one row.
 const LYRIC_SLIDE: std::time::Duration = std::time::Duration::from_millis(340);
 
+/// How long typing has to stop before a search goes out.
+///
+/// Long enough that a typed word is one request rather than one per letter,
+/// short enough that it still feels like it is keeping up.
+const SEARCH_SETTLE: std::time::Duration = std::time::Duration::from_millis(350);
+
 /// How many upcoming tracks to list.
 ///
 /// Spotify returns up to twenty, which would make the window taller than most
@@ -57,6 +63,11 @@ pub struct Ui {
     context_label: gtk4::Label,
     context_name: gtk4::Label,
     playlist_list: gtk4::Box,
+    search: gtk4::MenuButton,
+    search_entry: gtk4::SearchEntry,
+    search_list: gtk4::Box,
+    /// Results as last listed, so the popover is not rebuilt under the pointer.
+    listed_search: std::cell::RefCell<Vec<waytify_ipc::SearchResult>>,
     /// Playlists as last listed, so the popover is not rebuilt under the pointer
     /// on every state frame.
     listed_playlists: std::cell::RefCell<Vec<waytify_ipc::Playlist>>,
@@ -171,6 +182,7 @@ impl Ui {
         context.add_css_class("waytify-context");
         context.add_css_class("flat");
         context.set_child(Some(&lines));
+        context.set_hexpand(true);
 
         let playlists = gtk4::Popover::new();
         playlists.add_css_class("waytify-playlists");
@@ -189,6 +201,61 @@ impl Ui {
         }
 
         // Header: art beside the track's identity.
+        // Search sits beside the context line: both answer "play something
+        // else", one from what you have and one from everything there is.
+        let search = gtk4::MenuButton::new();
+        search.set_icon_name("system-search-symbolic");
+        search.add_css_class("search");
+        search.add_css_class("flat");
+
+        let search_popover = gtk4::Popover::new();
+        search_popover.add_css_class("waytify-search");
+        let search_box = gtk4::Box::new(gtk4::Orientation::Vertical, 8);
+        let search_entry = gtk4::SearchEntry::new();
+        search_entry.set_placeholder_text(Some("Search Spotify"));
+        let search_list = gtk4::Box::new(gtk4::Orientation::Vertical, 2);
+        let search_scroll = gtk4::ScrolledWindow::new();
+        search_scroll.set_policy(gtk4::PolicyType::Never, gtk4::PolicyType::Automatic);
+        search_scroll.set_max_content_height(320);
+        search_scroll.set_propagate_natural_height(true);
+        search_scroll.set_child(Some(&search_list));
+        search_box.append(&search_entry);
+        search_box.append(&search_scroll);
+        search_popover.set_child(Some(&search_box));
+        search.set_popover(Some(&search_popover));
+
+        // One request per pause in typing rather than one per letter. The
+        // daemon holds its own floor between calls, but a word typed quickly
+        // would still queue five searches for four answers nobody reads.
+        {
+            let client = Rc::clone(&client);
+            let pending: Rc<std::cell::RefCell<Option<glib::SourceId>>> =
+                Rc::new(std::cell::RefCell::new(None));
+            search_entry.connect_search_changed(move |entry| {
+                if let Some(previous) = pending.borrow_mut().take() {
+                    previous.remove();
+                }
+                let query = entry.text().to_string();
+                let client = Rc::clone(&client);
+                let slot = Rc::clone(&pending);
+                let id = glib::timeout_add_local_once(SEARCH_SETTLE, move || {
+                    client.send(Command::Search { query: query.clone() });
+                    slot.borrow_mut().take();
+                });
+                *pending.borrow_mut() = Some(id);
+            });
+        }
+
+        // Focus follows the popover, so typing can start immediately.
+        {
+            let entry = search_entry.clone();
+            search_popover.connect_show(move |_| {
+                entry.grab_focus();
+            });
+        }
+
+        let top = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
+
         let header = gtk4::Box::new(gtk4::Orientation::Horizontal, 14);
         header.add_css_class("waytify-header");
 
@@ -389,7 +456,9 @@ impl Ui {
         queue.append(&queue_toggle);
         queue.append(&queue_list);
 
-        root.append(&context);
+        top.append(&context);
+        top.append(&search);
+        root.append(&top);
         root.append(&header);
         root.append(&scrub_row);
         root.append(&volume_row);
@@ -404,6 +473,10 @@ impl Ui {
             context_name,
             playlist_list,
             listed_playlists: std::cell::RefCell::new(Vec::new()),
+            search,
+            search_entry,
+            search_list,
+            listed_search: std::cell::RefCell::new(Vec::new()),
             art,
             art_placeholder,
             title,
@@ -787,9 +860,82 @@ impl Ui {
             }
         }
 
+        self.search.set_visible(switchable);
+        if *self.listed_search.borrow() != state.spotify.search {
+            self.rebuild_search(state);
+            *self.listed_search.borrow_mut() = state.spotify.search.clone();
+        }
+
         if *self.listed_playlists.borrow() != state.spotify.playlists {
             self.rebuild_playlists(state);
             *self.listed_playlists.borrow_mut() = state.spotify.playlists.clone();
+        }
+    }
+
+    fn rebuild_search(&self, state: &State) {
+        use waytify_ipc::SearchKind;
+
+        while let Some(child) = self.search_list.first_child() {
+            self.search_list.remove(&child);
+        }
+
+        if state.spotify.search.is_empty() {
+            // Nothing typed and nothing found look the same from here, and
+            // saying "no results" over an empty box would be wrong.
+            if !self.search_entry.text().trim().is_empty() {
+                let empty = label("search-empty");
+                empty.set_text("Nothing found");
+                self.search_list.append(&empty);
+            }
+            return;
+        }
+
+        for result in &state.spotify.search {
+            let content = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+            let name = label("search-name");
+            name.set_text(&result.name);
+            content.append(&name);
+
+            // What it is matters as much as who it is by: an album and a track
+            // of the same name are one letter apart in a list.
+            let kind = match result.kind {
+                SearchKind::Track => "Song",
+                SearchKind::Album => "Album",
+                SearchKind::Playlist => "Playlist",
+            };
+            let subtitle = label("search-subtitle");
+            subtitle.set_text(&if result.subtitle.is_empty() {
+                kind.to_string()
+            } else {
+                format!("{kind} · {}", result.subtitle)
+            });
+            content.append(&subtitle);
+
+            let row = gtk4::Button::new();
+            row.add_css_class("search-result");
+            row.add_css_class("flat");
+            row.set_child(Some(&content));
+
+            let client = Rc::clone(&self.client);
+            let uri = result.uri.clone();
+            let kind = result.kind;
+            let popover = self.search.popover();
+            row.connect_clicked(move |_| {
+                // A track plays on its own; an album or playlist is a context
+                // Spotify starts. Different request bodies, so the kind has to
+                // survive all the way here.
+                let command = match kind {
+                    SearchKind::Track => Command::PlayTrack { uri: uri.clone() },
+                    SearchKind::Album | SearchKind::Playlist => {
+                        Command::PlayContext { uri: uri.clone() }
+                    }
+                };
+                client.send(command);
+                if let Some(popover) = &popover {
+                    popover.popdown();
+                }
+            });
+            self.search_list.append(&row);
         }
     }
 

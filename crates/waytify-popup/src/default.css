@@ -369,3 +369,20 @@
   opacity: 0.45;
   font-size: 0.85rem;
 }
+
+/* Search. */
+.waytify-search > contents {
+  padding: 8px;
+  min-width: 280px;
+}
+
+.waytify-search .search-result {
+  padding: 6px 10px;
+  border-radius: 6px;
+}
+
+.waytify-search .search-subtitle,
+.waytify-search .search-empty {
+  opacity: 0.45;
+  font-size: 0.85rem;
+}

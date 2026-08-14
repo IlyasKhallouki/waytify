@@ -60,6 +60,8 @@ enum PlayerEvent {
     Context(Option<waytify_ipc::PlayContext>),
     /// The user's own playlists.
     Playlists(Vec<waytify_ipc::Playlist>),
+    /// What a search turned up.
+    Search(Vec<waytify_ipc::SearchResult>),
     /// Lyrics finished downloading, or turned out not to exist. Carries the key
     /// they were fetched for, since the track can change while a request is out.
     Lyrics {
@@ -457,6 +459,12 @@ impl Engine {
                     self.publish();
                 }
             }
+            PlayerEvent::Search(results) => {
+                if self.state.spotify.search != results {
+                    self.state.spotify.search = results;
+                    self.publish();
+                }
+            }
             PlayerEvent::Playlists(playlists) => {
                 if self.state.spotify.playlists != playlists {
                     self.state.spotify.playlists = playlists;
@@ -655,6 +663,25 @@ impl Engine {
                     let _ = events.send(PlayerEvent::Playlists(playlists)).await;
                 }
                 Err(e) => tracing::warn!("could not read your playlists: {e:#}"),
+            }
+        });
+    }
+
+    /// Run a search.
+    ///
+    /// An empty query clears the results rather than asking Spotify about
+    /// nothing, which is what emptying the box means.
+    fn request_search(&self, query: String) {
+        let Some(client) = &self.spotify else { return };
+        let client = Arc::clone(client);
+        let events = self.events_tx.clone();
+
+        tokio::spawn(async move {
+            match client.lock().await.search(&query).await {
+                Ok(results) => {
+                    let _ = events.send(PlayerEvent::Search(results)).await;
+                }
+                Err(e) => tracing::debug!("search failed: {e:#}"),
             }
         });
     }
@@ -1075,6 +1102,19 @@ impl Engine {
                 });
             }
             Command::RefreshPlaylists => self.request_playlists(),
+            Command::Search { query } => self.request_search(query.clone()),
+            Command::PlayTrack { uri } => {
+                let client = self
+                    .spotify
+                    .clone()
+                    .ok_or_else(|| anyhow::anyhow!("no Spotify account connected"))?;
+                let uri = uri.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = client.lock().await.play_track(&uri).await {
+                        tracing::warn!("could not play that: {e:#}");
+                    }
+                });
+            }
             Command::RefreshDevices => self.request_devices(),
             Command::ToggleLike => {
                 let client = self

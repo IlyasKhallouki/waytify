@@ -120,6 +120,29 @@ pub enum MediaKind {
     Podcast,
 }
 
+/// Something a search turned up.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SearchResult {
+    pub name: String,
+    /// The artist for a track, the artist for an album, the owner otherwise.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub subtitle: String,
+    pub uri: String,
+    pub kind: SearchKind,
+}
+
+/// What a result is, which decides how it gets played.
+///
+/// A track is played on its own. An album or a playlist is a context, which
+/// Spotify starts rather than plays, and those are different request bodies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchKind {
+    Track,
+    Album,
+    Playlist,
+}
+
 /// One of the user's own playlists, enough to show it and to start it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Playlist {
@@ -334,6 +357,10 @@ pub struct Spotify {
     /// you go looking for, not something that needs to be current.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub playlists: Vec<Playlist>,
+    /// Full scope only. Whatever the last search turned up, cleared when the
+    /// box is emptied.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub search: Vec<SearchResult>,
 }
 
 impl Default for Spotify {
@@ -347,6 +374,7 @@ impl Default for Spotify {
             active_device: None,
             context: None,
             playlists: Vec::new(),
+            search: Vec::new(),
         }
     }
 }
@@ -358,6 +386,7 @@ impl Spotify {
             && self.queue.is_empty()
             && self.context.is_none()
             && self.playlists.is_empty()
+            && self.search.is_empty()
     }
 
     /// True when writes to `/me/player/*` are expected to succeed.

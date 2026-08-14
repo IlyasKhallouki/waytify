@@ -66,6 +66,39 @@ struct Named {
 }
 
 #[derive(Debug, Deserialize)]
+struct SearchResponse {
+    #[serde(default)]
+    tracks: Option<Page<SearchTrack>>,
+    #[serde(default)]
+    albums: Option<Page<SearchAlbum>>,
+    #[serde(default)]
+    playlists: Option<Page<PlaylistItem>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Page<T> {
+    /// Spotify has been known to put nulls in a results page.
+    #[serde(default = "Vec::new")]
+    items: Vec<Option<T>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SearchTrack {
+    name: String,
+    uri: Option<String>,
+    #[serde(default)]
+    artists: Vec<Artist>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SearchAlbum {
+    name: String,
+    uri: Option<String>,
+    #[serde(default)]
+    artists: Vec<Artist>,
+}
+
+#[derive(Debug, Deserialize)]
 struct Playlists {
     items: Vec<PlaylistItem>,
 }
@@ -76,6 +109,13 @@ struct PlaylistItem {
     uri: Option<String>,
     #[serde(default)]
     tracks: Option<Count>,
+    #[serde(default)]
+    owner: Option<Owner>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Owner {
+    display_name: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -399,6 +439,67 @@ impl Client {
             .collect())
     }
 
+    /// Search Spotify for tracks, albums and playlists.
+    ///
+    /// Everything a search can return that this window can then play. Artists
+    /// and shows are not offered because starting an artist plays something
+    /// arbitrary from them, which is a worse answer than not listing them.
+    pub async fn search(&mut self, query: &str) -> Result<Vec<waytify_ipc::SearchResult>> {
+        use waytify_ipc::SearchKind;
+
+        let query = query.trim();
+        if query.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let path = format!(
+            "/search?q={}&type=track,album,playlist&limit={PER_KIND}",
+            urlencode_query(query)
+        );
+        let found: SearchResponse = self.get_json(&path).await?;
+
+        let mut out = Vec::new();
+        // Tracks first: a search in a player is nearly always for a song.
+        for track in found.tracks.into_iter().flat_map(|p| p.items).flatten() {
+            let Some(uri) = track.uri else { continue };
+            out.push(waytify_ipc::SearchResult {
+                name: track.name,
+                subtitle: join_artists(track.artists),
+                uri,
+                kind: SearchKind::Track,
+            });
+        }
+        for album in found.albums.into_iter().flat_map(|p| p.items).flatten() {
+            let Some(uri) = album.uri else { continue };
+            out.push(waytify_ipc::SearchResult {
+                name: album.name,
+                subtitle: join_artists(album.artists),
+                uri,
+                kind: SearchKind::Album,
+            });
+        }
+        for playlist in found.playlists.into_iter().flat_map(|p| p.items).flatten() {
+            let Some(uri) = playlist.uri else { continue };
+            out.push(waytify_ipc::SearchResult {
+                name: playlist.name,
+                subtitle: playlist.owner.and_then(|o| o.display_name).unwrap_or_default(),
+                uri,
+                kind: SearchKind::Playlist,
+            });
+        }
+        Ok(out)
+    }
+
+    /// Play one track, on its own.
+    ///
+    /// Not a context: Spotify plays the given uris and then carries on with
+    /// whatever it would have done, which is what picking a single song out of
+    /// a search should do.
+    pub async fn play_track(&mut self, uri: &str) -> Result<()> {
+        let body = serde_json::json!({ "uris": [uri] });
+        self.player_write(reqwest::Method::PUT, "/me/player/play", Some(body)).await
+    }
+
     /// Whether the stored token is too old for what this build asks of it.
     pub fn needs_reauthorization(&self) -> bool {
         self.scope_missing
@@ -546,6 +647,35 @@ fn backoff(retry_after: Option<u64>, strikes: u32) -> Duration {
     Duration::from_secs(retry_after.unwrap_or(5).max(floor).min(CAP))
 }
 
+/// How many of each kind a search returns.
+///
+/// Five apiece fills a popover without scrolling. A search in a player is aimed
+/// at something the user already has in mind, so the answer is either near the
+/// top or the query was wrong.
+const PER_KIND: u32 = 5;
+
+fn join_artists(artists: Vec<Artist>) -> String {
+    artists.into_iter().map(|a| a.name).collect::<Vec<_>>().join(", ")
+}
+
+/// Percent-encode a search query.
+///
+/// Queries are whatever somebody typed, so everything that is not plainly safe
+/// is escaped rather than listing the characters that are not.
+fn urlencode_query(query: &str) -> String {
+    let mut out = String::with_capacity(query.len());
+    for byte in query.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char)
+            }
+            b' ' => out.push('+'),
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
+}
+
 /// Percent-encode a Spotify URI for a query string.
 ///
 /// The colons in `spotify:track:{id}` are safe unencoded but not every proxy
@@ -676,6 +806,55 @@ mod tests {
         // A real failure must still surface rather than being read as "nothing
         // queued", which would hide the problem behind a plausible answer.
         assert!(!says_no_queue(StatusCode::UNAUTHORIZED, r#"{"error":"expired"}"#));
+    }
+
+    #[test]
+    fn a_query_survives_whatever_was_typed_into_it() {
+        assert_eq!(urlencode_query("daft punk"), "daft+punk");
+        // Ampersands and hashes end a query string or start a fragment, so an
+        // unescaped one silently searches for less than was typed.
+        assert_eq!(urlencode_query("rock & roll"), "rock+%26+roll");
+        assert_eq!(urlencode_query("c#"), "c%23");
+        assert_eq!(urlencode_query("a+b"), "a%2Bb", "a plus is not a space");
+        // Anything non-ascii is escaped byte by byte rather than passed through.
+        assert_eq!(urlencode_query("Ólafur"), "%C3%93lafur");
+        assert_eq!(urlencode_query(""), "");
+    }
+
+    #[test]
+    fn a_search_reads_every_kind_it_asked_for() {
+        use waytify_ipc::SearchKind;
+
+        let json = r#"{
+            "tracks":{"items":[
+                {"name":"A song","uri":"spotify:track:a","artists":[{"name":"Someone"}]},
+                null,
+                {"name":"No uri","artists":[]}
+            ]},
+            "albums":{"items":[{"name":"A record","uri":"spotify:album:b","artists":[{"name":"Someone"}]}]},
+            "playlists":{"items":[{"name":"A list","uri":"spotify:playlist:c","owner":{"display_name":"Them"}}]}
+        }"#;
+        let found: SearchResponse = serde_json::from_str(json).unwrap();
+
+        // Spotify puts nulls in results pages, and an entry with no uri cannot
+        // be played. Both are skipped rather than taking the whole search down.
+        let tracks: Vec<_> = found.tracks.unwrap().items.into_iter().flatten().collect();
+        assert_eq!(tracks.len(), 2);
+        assert!(tracks[1].uri.is_none());
+
+        let playlists: Vec<_> = found.playlists.unwrap().items.into_iter().flatten().collect();
+        assert_eq!(
+            playlists[0].owner.as_ref().and_then(|o| o.display_name.as_deref()),
+            Some("Them")
+        );
+
+        // A kind that is missing entirely is not an error: a query can match
+        // songs and no albums.
+        let sparse: SearchResponse = serde_json::from_str(r#"{"tracks":{"items":[]}}"#).unwrap();
+        assert!(sparse.albums.is_none());
+        assert!(sparse.playlists.is_none());
+
+        assert_ne!(SearchKind::Track, SearchKind::Album);
     }
 
     #[test]

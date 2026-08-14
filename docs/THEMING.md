@@ -53,6 +53,7 @@ anything, and the window does not even need to be closed.
 ```
 #waytify-window                     the layer-shell window, transparent
 └── #waytify-popup                  the panel: background, radius, padding
+    ├── .search                     opens the search popover
     ├── .waytify-context            a GtkMenuButton opening the playlist picker
     │   ├── .context-label          "Playing from playlist", or "Play from"
     │   └── .context-name           the playlist or album itself
@@ -92,6 +93,13 @@ anything, and the window does not even need to be closed.
 
 #waytify-dismiss                    full-screen click catcher, transparent
 └── .waytify-backdrop               style this for a dimmed backdrop
+
+.waytify-search                     the search popover
+├── entry                           a GtkSearchEntry
+├── .search-result                  one result
+│   ├── .search-name
+│   └── .search-subtitle            what it is, then who it is by
+└── .search-empty                   shown when a query found nothing
 
 .waytify-playlists                  the playlist picker popover
 ├── .playlist                       one of yours, .active for the current one
