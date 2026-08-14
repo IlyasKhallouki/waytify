@@ -1062,37 +1062,50 @@ impl Engine {
         self.updates.send_replace(Arc::new(self.state.clone()));
     }
 
-    async fn apply(&mut self, cmd: Command) -> Result<()> {
-        let Some(a) = &self.attached else {
-            anyhow::bail!("no player is running");
-        };
-        let player = a.player.clone();
+    /// The attached player, for the commands that need one.
+    ///
+    /// Not every command does. Transport goes to MPRIS and needs something to
+    /// send it to, but browsing your playlists, searching, or starting one is a
+    /// conversation with Spotify that has nothing to do with what is running
+    /// locally. Requiring a player for those meant the picker could not be used
+    /// for the one thing it was built for, which is starting something when
+    /// nothing is playing.
+    fn player(&self) -> Result<PlayerProxy<'static>> {
+        match &self.attached {
+            Some(a) => Ok(a.player.clone()),
+            None => anyhow::bail!("no player is running"),
+        }
+    }
 
+    async fn apply(&mut self, cmd: Command) -> Result<()> {
         match cmd {
-            Command::PlayPause => player.play_pause().await?,
-            Command::Play => player.play().await?,
-            Command::Pause => player.pause().await?,
-            Command::Next => player.next().await?,
-            Command::Previous => player.previous().await?,
+            Command::PlayPause => self.player()?.play_pause().await?,
+            Command::Play => self.player()?.play().await?,
+            Command::Pause => self.player()?.pause().await?,
+            Command::Next => self.player()?.next().await?,
+            Command::Previous => self.player()?.previous().await?,
 
             Command::Seek { position_ms } => self.seek_absolute(position_ms).await?,
-            Command::SeekBy { delta_ms } => player.seek(delta_ms * 1_000).await?,
+            Command::SeekBy { delta_ms } => self.player()?.seek(delta_ms * 1_000).await?,
 
             Command::ToggleShuffle => {
                 let current = self.state.player.as_ref().and_then(|p| p.shuffle).unwrap_or(false);
-                player.set_shuffle(!current).await?;
+                self.player()?.set_shuffle(!current).await?;
             }
-            Command::SetShuffle { on } => player.set_shuffle(on).await?,
+            Command::SetShuffle { on } => self.player()?.set_shuffle(on).await?,
             Command::CycleRepeat => {
                 let current = self.state.player.as_ref().and_then(|p| p.repeat).unwrap_or_default();
-                player.set_loop_status(mpris::repeat_to_mpris(current.next())).await?;
+                self.player()?.set_loop_status(mpris::repeat_to_mpris(current.next())).await?;
             }
             Command::SetRepeat { mode } => {
-                player.set_loop_status(mpris::repeat_to_mpris(mode)).await?;
+                self.player()?.set_loop_status(mpris::repeat_to_mpris(mode)).await?;
             }
 
             Command::RaisePlayer => {
-                let bus = a.bus_name.clone();
+                let bus = match &self.attached {
+                    Some(a) => a.bus_name.clone(),
+                    None => anyhow::bail!("no player is running"),
+                };
                 let root = MediaPlayer2Proxy::builder(&self.conn).destination(bus)?.build().await?;
                 root.raise().await?;
             }

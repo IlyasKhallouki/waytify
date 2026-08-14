@@ -37,6 +37,14 @@ These rules apply to everything under `crates/waytify-core/src/spotify/`.
   Spotify content beyond what is needed for immediate use. Attribute content to
   Spotify. Do not use the API to train machine learning models on Spotify data.
 
+## Building
+
+`/tmp` on this machine is tmpfs, which means RAM. Never build there. A Cargo
+debug build of this project is 8GB with symbols, and putting one in `/tmp` takes
+that straight out of memory. Package builds and any other scratch compilation go
+under `~/.cache/waytify-build/`, which is on disk, and get removed when they are
+finished with.
+
 ## Writing
 
 No em dashes in prose, comments, or commit messages. Comments say why, not what.
