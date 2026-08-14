@@ -146,6 +146,8 @@ pub enum Command {
     RefreshPlaylists,
     /// Fetch what was played recently. Asked for when the list is opened.
     RefreshRecent,
+    /// Fetch everything in the playlist or album being played.
+    RefreshContextTracks,
     /// Search Spotify. An empty query clears the results rather than searching
     /// for nothing.
     Search {

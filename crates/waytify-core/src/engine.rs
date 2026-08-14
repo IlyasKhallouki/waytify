@@ -64,6 +64,8 @@ enum PlayerEvent {
     Search(Vec<waytify_ipc::SearchResult>),
     /// What was played recently.
     Recent(Vec<waytify_ipc::Track>),
+    /// Everything in the playlist or album being played.
+    ContextTracks(Vec<waytify_ipc::Track>),
     /// Lyrics finished downloading, or turned out not to exist. Carries the key
     /// they were fetched for, since the track can change while a request is out.
     Lyrics {
@@ -378,6 +380,7 @@ impl Engine {
         self.state.player = None;
         self.state.spotify.queue.clear();
         self.state.spotify.context = None;
+        self.state.spotify.context_tracks.clear();
         self.state.lyrics = None;
         self.clock.set_playing(false, Instant::now());
         self.publish();
@@ -457,7 +460,15 @@ impl Engine {
                     return;
                 }
                 if self.state.spotify.context != context {
+                    // What was in the last one does not belong to this one.
+                    self.state.spotify.context_tracks.clear();
                     self.state.spotify.context = context;
+                    self.publish();
+                }
+            }
+            PlayerEvent::ContextTracks(tracks) => {
+                if self.state.spotify.context_tracks != tracks {
+                    self.state.spotify.context_tracks = tracks;
                     self.publish();
                 }
             }
@@ -709,6 +720,25 @@ impl Engine {
                     let _ = events.send(PlayerEvent::Recent(recent)).await;
                 }
                 Err(e) => tracing::warn!("could not read recently played: {e:#}"),
+            }
+        });
+    }
+
+    /// Fetch everything in the playlist or album being played.
+    fn request_context_tracks(&self) {
+        let (Some(client), Some(context)) = (&self.spotify, self.state.spotify.context.clone())
+        else {
+            return;
+        };
+        let client = Arc::clone(client);
+        let events = self.events_tx.clone();
+
+        tokio::spawn(async move {
+            match client.lock().await.context_tracks(&context).await {
+                Ok(tracks) => {
+                    let _ = events.send(PlayerEvent::ContextTracks(tracks)).await;
+                }
+                Err(e) => tracing::warn!("could not read what is in this: {e:#}"),
             }
         });
     }
@@ -1130,6 +1160,7 @@ impl Engine {
             }
             Command::RefreshPlaylists => self.request_playlists(),
             Command::RefreshRecent => self.request_recent(),
+            Command::RefreshContextTracks => self.request_context_tracks(),
             Command::Search { query } => self.request_search(query.clone()),
             Command::PlayTrack { uri } => {
                 let client = self

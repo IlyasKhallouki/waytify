@@ -65,6 +65,25 @@ struct Named {
     name: String,
 }
 
+/// A page of playlist entries, each wrapping the track itself.
+#[derive(Debug, Deserialize)]
+struct PlaylistItems {
+    #[serde(default = "Vec::new")]
+    items: Vec<PlaylistEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PlaylistEntry {
+    track: Option<Item>,
+}
+
+/// A page of album tracks, which are the items themselves.
+#[derive(Debug, Deserialize)]
+struct AlbumTracks {
+    #[serde(default = "Vec::new")]
+    items: Vec<Option<Item>>,
+}
+
 #[derive(Debug, Deserialize)]
 struct History {
     #[serde(default = "Vec::new")]
@@ -545,6 +564,41 @@ impl Client {
             .collect())
     }
 
+    /// Everything in the playlist or album currently playing.
+    ///
+    /// Up next shows what Spotify will play; this shows what you chose, in the
+    /// order it is in, which is the only way to reach the eleventh track
+    /// without skipping ten times.
+    pub async fn context_tracks(
+        &mut self,
+        context: &waytify_ipc::PlayContext,
+    ) -> Result<Vec<waytify_ipc::Track>> {
+        use waytify_ipc::ContextKind;
+
+        let Some(uri) = context.uri.as_deref() else { return Ok(Vec::new()) };
+        let Some(id) = uri.rsplit(':').next().filter(|id| !id.is_empty()) else {
+            return Ok(Vec::new());
+        };
+
+        match context.kind {
+            ContextKind::Playlist => {
+                // /items rather than /tracks: the latter is deprecated.
+                let path = format!("/playlists/{id}/items?limit={CONTEXT_TRACKS}");
+                let page: PlaylistItems = self.get_json(&path).await?;
+                Ok(page.items.into_iter().filter_map(|e| e.track).map(into_track).collect())
+            }
+            ContextKind::Album => {
+                let path = format!("/albums/{id}/tracks?limit={CONTEXT_TRACKS}");
+                let page: AlbumTracks = self.get_json(&path).await?;
+                Ok(page.items.into_iter().flatten().map(into_track).collect())
+            }
+            // An artist, a show or your saved songs have an order, but not one
+            // Spotify will start you at, so listing them would offer rows that
+            // cannot be played.
+            _ => Ok(Vec::new()),
+        }
+    }
+
     /// Play one track, on its own.
     ///
     /// Not a context: Spotify plays the given uris and then carries on with
@@ -724,6 +778,12 @@ fn into_track(item: Item) -> waytify_ipc::Track {
     }
 }
 
+/// How much of the current playlist or album to list.
+///
+/// One page. A playlist of two thousand is not browsed in a popup, and paging
+/// through it would spend a request per hundred on rows nobody scrolls to.
+const CONTEXT_TRACKS: u32 = 100;
+
 /// How many of each kind a search returns.
 ///
 /// Five apiece fills a popover without scrolling. A search in a player is aimed
@@ -883,6 +943,28 @@ mod tests {
         // A real failure must still surface rather than being read as "nothing
         // queued", which would hide the problem behind a plausible answer.
         assert!(!says_no_queue(StatusCode::UNAUTHORIZED, r#"{"error":"expired"}"#));
+    }
+
+    #[test]
+    fn a_playlist_wraps_its_tracks_and_an_album_does_not() {
+        // Two endpoints, two shapes. A playlist entry has the track inside it,
+        // because the entry also carries who added it and when. An album's
+        // tracks are the items themselves.
+        let playlist = r#"{"items":[
+            {"track":{"type":"track","name":"Wrapped","uri":"spotify:track:a"}},
+            {"track":null}
+        ]}"#;
+        let page: PlaylistItems = serde_json::from_str(playlist).unwrap();
+        let tracks: Vec<_> =
+            page.items.into_iter().filter_map(|e| e.track).map(into_track).collect();
+        assert_eq!(tracks.len(), 1, "a removed track leaves a null behind");
+        assert_eq!(tracks[0].title, "Wrapped");
+
+        let album = r#"{"items":[{"type":"track","name":"Bare","uri":"spotify:track:b"}]}"#;
+        let page: AlbumTracks = serde_json::from_str(album).unwrap();
+        let tracks: Vec<_> = page.items.into_iter().flatten().map(into_track).collect();
+        assert_eq!(tracks[0].title, "Bare");
+        assert_eq!(tracks[0].id.as_deref(), Some("spotify:track:b"));
     }
 
     #[test]

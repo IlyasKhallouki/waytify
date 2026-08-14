@@ -198,6 +198,18 @@ pub enum ContextKind {
 }
 
 impl ContextKind {
+    /// What to call it in a heading, lower case.
+    pub fn noun(self) -> &'static str {
+        match self {
+            ContextKind::Playlist => "playlist",
+            ContextKind::Album => "album",
+            ContextKind::Artist => "artist",
+            ContextKind::Show => "podcast",
+            ContextKind::Collection => "collection",
+            ContextKind::Other => "context",
+        }
+    }
+
     /// How to introduce it, as the real client does.
     pub fn label(self) -> &'static str {
         match self {
@@ -364,6 +376,9 @@ pub struct Spotify {
     /// Full scope only, and only once the list has been opened.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub recent: Vec<Track>,
+    /// Everything in the playlist or album being played, once asked for.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub context_tracks: Vec<Track>,
 }
 
 impl Default for Spotify {
@@ -379,6 +394,7 @@ impl Default for Spotify {
             playlists: Vec::new(),
             search: Vec::new(),
             recent: Vec::new(),
+            context_tracks: Vec::new(),
         }
     }
 }
@@ -392,6 +408,7 @@ impl Spotify {
             && self.playlists.is_empty()
             && self.search.is_empty()
             && self.recent.is_empty()
+            && self.context_tracks.is_empty()
     }
 
     /// True when writes to `/me/player/*` are expected to succeed.

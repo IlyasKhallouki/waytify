@@ -123,6 +123,18 @@ impl TrackSection {
         }
     }
 
+    /// Rename the section, for one that is named after what it is showing.
+    fn heading(&self, title: &str) {
+        if let Some(label) = self
+            .toggle
+            .child()
+            .and_then(|c| c.first_child())
+            .and_then(|w| w.downcast::<gtk4::Label>().ok())
+        {
+            label.set_text(title);
+        }
+    }
+
     /// Fill the rows, if what is in them has changed.
     ///
     /// `command` turns a row's uri into whatever plays it, which is the one
@@ -268,6 +280,8 @@ pub struct Ui {
     anchor: Cell<(u64, std::time::Instant)>,
     playing: Cell<bool>,
     queue: TrackSection,
+    /// Everything in the playlist or album being played.
+    in_context: TrackSection,
     recent: TrackSection,
     /// Devices currently listed in the picker, so it is only rebuilt when the
     /// set changes rather than on every state frame.
@@ -532,7 +546,17 @@ impl Ui {
         let lyric_strip = strip;
 
         let queue = TrackSection::build("Up next");
+        let in_context = TrackSection::build("In this");
         let recent = TrackSection::build("Recently played");
+
+        {
+            let client = Rc::clone(&client);
+            in_context.toggle.connect_toggled(move |t| {
+                if t.is_active() {
+                    client.send(Command::RefreshContextTracks);
+                }
+            });
+        }
 
         // Fetched when opened rather than kept current: a record of the past
         // cannot go out of date in a way that matters.
@@ -554,6 +578,7 @@ impl Ui {
         root.append(&transport);
         root.append(&lyrics);
         root.append(&queue.root);
+        root.append(&in_context.root);
         root.append(&recent.root);
 
         let ui = Self {
@@ -596,6 +621,7 @@ impl Ui {
             anchor: Cell::new((0, std::time::Instant::now())),
             playing: Cell::new(false),
             queue,
+            in_context,
             recent,
             listed_devices: std::cell::RefCell::new(Vec::new()),
             client: Rc::clone(&client),
@@ -1263,6 +1289,21 @@ impl Ui {
             Command::PlayQueued { uri }
         });
 
+        // The whole playlist or album, which is the only way to reach its
+        // eleventh track without skipping ten times. Offered wherever an item
+        // inside it can be started, which is the same rule the queue rows use.
+        let addressable = state.spotify.context.as_ref().is_some_and(|c| c.is_addressable());
+        if let Some(context) = &state.spotify.context {
+            self.in_context.heading(&format!("In this {}", context.kind.noun()));
+        }
+        self.in_context.render(
+            &state.spotify.context_tracks,
+            addressable,
+            playable,
+            &self.client,
+            |uri| Command::PlayQueued { uri },
+        );
+
         // Anything played before can be played again, which needs no context at
         // all: a track is played on its own.
         let recent = &state.spotify.recent[..state.spotify.recent.len().min(QUEUE_ROWS)];
@@ -1609,6 +1650,7 @@ mod tests {
         check_a_step_rotates_rather_than_restyling(&ui);
         check_art_colors_cross_providers(&ui);
         check_recently_played(&ui, &mut state);
+        check_the_whole_context(&ui, &mut state);
         check_lyrics(&ui, &mut state);
         check_the_position_carries_forward(&ui, &mut state);
     }
@@ -1912,6 +1954,59 @@ mod tests {
         state.spotify.recent.clear();
         state.caps.can_transfer = false;
         state.spotify.authorized = false;
+    }
+
+    /// The list of everything in the playlist or album being played.
+    fn check_the_whole_context(ui: &Ui, state: &mut State) {
+        use waytify_ipc::{ContextKind, PlayContext};
+
+        state.caps.can_transfer = true;
+        state.spotify.context = None;
+        ui.render(state);
+        assert!(!ui.in_context.root.is_visible(), "nothing to be inside of");
+
+        // A show has an order but Spotify will not start you at a point in it,
+        // so the rows would be unplayable and the section is not offered.
+        state.spotify.context = Some(PlayContext {
+            kind: ContextKind::Show,
+            name: "A podcast".into(),
+            uri: Some("spotify:show:x".into()),
+            url: None,
+        });
+        ui.render(state);
+        assert!(!ui.in_context.root.is_visible());
+
+        state.spotify.context = Some(PlayContext {
+            kind: ContextKind::Album,
+            name: "A record".into(),
+            uri: Some("spotify:album:x".into()),
+            url: None,
+        });
+        ui.render(state);
+        assert!(ui.in_context.root.is_visible(), "offered while empty, so it can be opened");
+
+        // Named after what it is showing, so two collapsed lists are not both
+        // called the same thing.
+        let heading = ui
+            .in_context
+            .toggle
+            .child()
+            .and_then(|c| c.first_child())
+            .and_then(|w| w.downcast::<gtk4::Label>().ok())
+            .expect("a heading");
+        assert_eq!(heading.text(), "In this album");
+
+        state.spotify.context_tracks = vec![Track {
+            id: Some("spotify:track:q".into()),
+            title: "Track one".into(),
+            ..Default::default()
+        }];
+        ui.render(state);
+        assert!(ui.in_context.list.first_child().expect("a row").is_sensitive());
+
+        state.spotify.context_tracks.clear();
+        state.spotify.context = None;
+        state.caps.can_transfer = false;
     }
 
     fn check_lyrics(ui: &Ui, state: &mut State) {
