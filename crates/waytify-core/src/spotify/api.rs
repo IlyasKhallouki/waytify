@@ -66,6 +66,24 @@ struct Named {
 }
 
 #[derive(Debug, Deserialize)]
+struct Playlists {
+    items: Vec<PlaylistItem>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PlaylistItem {
+    name: String,
+    uri: Option<String>,
+    #[serde(default)]
+    tracks: Option<Count>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Count {
+    total: u32,
+}
+
+#[derive(Debug, Deserialize)]
 struct Queue {
     queue: Vec<Item>,
 }
@@ -111,6 +129,13 @@ pub struct Client {
     /// Context names by uri, so playing a whole playlist asks once rather than
     /// once per track.
     context_names: std::collections::HashMap<String, String>,
+    /// Set when the stored token predates a scope this build needs.
+    ///
+    /// Adding a feature adds a scope, and a refresh token issued before that
+    /// cannot grant it. The call fails with a 403 that says so, and the only
+    /// fix is logging in again, so it is worth saying once and clearly rather
+    /// than failing quietly every time the picker opens.
+    scope_missing: bool,
     /// Set when Spotify refuses a library call outright.
     ///
     /// It means this token cannot read or change saved tracks at all, usually
@@ -131,6 +156,7 @@ impl Client {
             throttle_strikes: 0,
             premium: None,
             context_names: std::collections::HashMap::new(),
+            scope_missing: false,
             library_forbidden: false,
         })
     }
@@ -334,6 +360,54 @@ impl Client {
         // to another device pauses, which is never what the click meant.
         let body = serde_json::json!({ "device_ids": [device_id], "play": true });
         self.player_write(reqwest::Method::PUT, "/me/player", Some(body)).await
+    }
+
+    /// The user's own playlists, most recent first, as Spotify orders them.
+    ///
+    /// One page. Somebody with four hundred playlists is not going to find the
+    /// one they want by scrolling a popup, and paging through all of them would
+    /// spend a request per fifty for a list nobody reads to the end.
+    pub async fn playlists(&mut self) -> Result<Vec<waytify_ipc::Playlist>> {
+        let response = self.request(reqwest::Method::GET, "/me/playlists?limit=50", None).await?;
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+
+        if status == reqwest::StatusCode::FORBIDDEN {
+            self.scope_missing = true;
+            bail!(
+                "your Spotify login predates this feature. Run `waytify login` \
+                 again to grant access to your playlists."
+            );
+        }
+        if !status.is_success() {
+            bail!("Spotify returned {status} for playlists: {body}");
+        }
+
+        let playlists: Playlists =
+            serde_json::from_str(&body).context("unexpected response from /me/playlists")?;
+        Ok(playlists
+            .items
+            .into_iter()
+            // A playlist with no uri cannot be played, so it is not offered.
+            .filter_map(|p| {
+                Some(waytify_ipc::Playlist {
+                    name: p.name,
+                    uri: p.uri?,
+                    tracks: p.tracks.map(|t| t.total),
+                })
+            })
+            .collect())
+    }
+
+    /// Whether the stored token is too old for what this build asks of it.
+    pub fn needs_reauthorization(&self) -> bool {
+        self.scope_missing
+    }
+
+    /// Start playing a whole context: a playlist, an album, an artist.
+    pub async fn play_context(&mut self, context_uri: &str) -> Result<()> {
+        let body = serde_json::json!({ "context_uri": context_uri });
+        self.player_write(reqwest::Method::PUT, "/me/player/play", Some(body)).await
     }
 
     /// Start playing one item from inside a playlist or album.

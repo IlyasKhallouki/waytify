@@ -13,7 +13,7 @@ pub mod state;
 
 pub use state::{
     ArtColors, Audio, Caps, ContextKind, Device, LyricLine, Lyrics, MediaKind, PlayContext, Player,
-    Repeat, Rgb, Spotify, State, Status, Track, VolumeRoute,
+    Playlist, Repeat, Rgb, Spotify, State, Status, Track, VolumeRoute,
 };
 
 use serde::{Deserialize, Serialize};
@@ -137,6 +137,13 @@ pub enum Command {
     PlayQueued {
         uri: String,
     },
+    /// Start playing a playlist, album or anything else Spotify will take as a
+    /// context.
+    PlayContext {
+        uri: String,
+    },
+    /// Fetch the user's playlists. Asked for when the picker opens.
+    RefreshPlaylists,
     /// Ask Spotify for the device list now.
     ///
     /// It is polled while the window is open, but a device that has just been

@@ -53,8 +53,8 @@ anything, and the window does not even need to be closed.
 ```
 #waytify-window                     the layer-shell window, transparent
 └── #waytify-popup                  the panel: background, radius, padding
-    ├── .waytify-context            hidden unless Spotify says where from
-    │   ├── .context-label          "Playing from playlist"
+    ├── .waytify-context            a GtkMenuButton opening the playlist picker
+    │   ├── .context-label          "Playing from playlist", or "Play from"
     │   └── .context-name           the playlist or album itself
     ├── .waytify-header
     │   ├── .waytify-art            cover image
@@ -92,6 +92,12 @@ anything, and the window does not even need to be closed.
 
 #waytify-dismiss                    full-screen click catcher, transparent
 └── .waytify-backdrop               style this for a dimmed backdrop
+
+.waytify-playlists                  the playlist picker popover
+├── .playlist                       one of yours, .active for the current one
+│   ├── .playlist-name
+│   └── .playlist-count
+└── .playlists-empty                shown when there are none to list
 
 .waytify-outputs                    the device picker popover
 ├── .outputs-heading

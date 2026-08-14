@@ -175,8 +175,9 @@ up from the artist, title and length of whatever is playing. Nothing is
 requested unless the window is actually on screen, and both hits and misses are
 cached.
 
-With a Spotify account connected it also lists what is playing next, folded
-away until you ask for it, and lets you move playback between Connect devices.
+The line at the top says what you are playing out of, and clicking it lists your
+playlists so you can play something else. With a Spotify account connected the
+window also lists what is playing next, folded away until you ask for it, and lets you move playback between Connect devices.
 Spotify only reports devices with a live session, so a phone with the app closed
 will not be listed even though the Spotify app itself shows it: the app does its
 own discovery on the local network, and the Web API exposes no equivalent. Clicking one of those plays it, when playback came from a

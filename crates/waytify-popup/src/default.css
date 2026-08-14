@@ -348,3 +348,24 @@
   border-color: #1db954;
   color: #000000;
 }
+
+/* Playlist picker, hung off the context line. */
+.waytify-playlists > contents {
+  padding: 8px;
+  min-width: 240px;
+}
+
+.waytify-playlists .playlist {
+  padding: 6px 10px;
+  border-radius: 6px;
+}
+
+.waytify-playlists .playlist.active {
+  font-weight: 600;
+}
+
+.waytify-playlists .playlist-count,
+.waytify-playlists .playlists-empty {
+  opacity: 0.45;
+  font-size: 0.85rem;
+}

@@ -53,9 +53,13 @@ const QUEUE_ROWS: usize = 5;
 
 pub struct Ui {
     pub root: gtk4::Box,
-    context: gtk4::Box,
+    context: gtk4::MenuButton,
     context_label: gtk4::Label,
     context_name: gtk4::Label,
+    playlist_list: gtk4::Box,
+    /// Playlists as last listed, so the popover is not rebuilt under the pointer
+    /// on every state frame.
+    listed_playlists: std::cell::RefCell<Vec<waytify_ipc::Playlist>>,
     art: gtk4::Image,
     art_placeholder: gtk4::Box,
     title: gtk4::Label,
@@ -155,12 +159,34 @@ impl Ui {
         // Above everything, the way the real client puts it. What you are
         // listening to is a different question from what you picked to listen
         // to, and the second one is the easier of the two to lose track of.
-        let context = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
-        context.add_css_class("waytify-context");
+        let lines = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
         let context_label = label("context-label");
         let context_name = label("context-name");
-        context.append(&context_label);
-        context.append(&context_name);
+        lines.append(&context_label);
+        lines.append(&context_name);
+
+        // The line doubles as the way out of it. Where you are playing from and
+        // where you could play from instead are the same question asked twice.
+        let context = gtk4::MenuButton::new();
+        context.add_css_class("waytify-context");
+        context.add_css_class("flat");
+        context.set_child(Some(&lines));
+
+        let playlists = gtk4::Popover::new();
+        playlists.add_css_class("waytify-playlists");
+        let playlist_list = gtk4::Box::new(gtk4::Orientation::Vertical, 2);
+        let playlist_scroll = gtk4::ScrolledWindow::new();
+        playlist_scroll.set_policy(gtk4::PolicyType::Never, gtk4::PolicyType::Automatic);
+        playlist_scroll.set_max_content_height(320);
+        playlist_scroll.set_propagate_natural_height(true);
+        playlist_scroll.set_child(Some(&playlist_list));
+        playlists.set_child(Some(&playlist_scroll));
+        context.set_popover(Some(&playlists));
+
+        {
+            let client = Rc::clone(&client);
+            playlists.connect_show(move |_| client.send(Command::RefreshPlaylists));
+        }
 
         // Header: art beside the track's identity.
         let header = gtk4::Box::new(gtk4::Orientation::Horizontal, 14);
@@ -376,6 +402,8 @@ impl Ui {
             context,
             context_label,
             context_name,
+            playlist_list,
+            listed_playlists: std::cell::RefCell::new(Vec::new()),
             art,
             art_placeholder,
             title,
@@ -740,12 +768,76 @@ impl Ui {
     /// common case: a track played from a search has no context, and neither
     /// does anything that is not Spotify.
     fn render_context(&self, state: &State) {
+        // Shown whenever the account can start something, even with nothing
+        // playing from anywhere: that is exactly when you most want the list.
+        let switchable = state.caps.can_transfer;
         let context = state.spotify.context.as_ref();
-        self.context.set_visible(context.is_some());
-        let Some(context) = context else { return };
+        self.context.set_visible(switchable || context.is_some());
+        self.context.set_sensitive(switchable);
 
-        self.context_label.set_text(context.kind.label());
-        self.context_name.set_text(&context.name);
+        match context {
+            Some(context) => {
+                self.context_label.set_text(context.kind.label());
+                self.context_name.set_text(&context.name);
+                self.context_name.set_visible(true);
+            }
+            None => {
+                self.context_label.set_text("Play from");
+                self.context_name.set_visible(false);
+            }
+        }
+
+        if *self.listed_playlists.borrow() != state.spotify.playlists {
+            self.rebuild_playlists(state);
+            *self.listed_playlists.borrow_mut() = state.spotify.playlists.clone();
+        }
+    }
+
+    fn rebuild_playlists(&self, state: &State) {
+        while let Some(child) = self.playlist_list.first_child() {
+            self.playlist_list.remove(&child);
+        }
+
+        if state.spotify.playlists.is_empty() {
+            let empty = label("playlists-empty");
+            empty.set_text("No playlists yet. If you have some, your login may\npredate this feature: run waytify login again.");
+            empty.set_ellipsize(gtk4::pango::EllipsizeMode::None);
+            self.playlist_list.append(&empty);
+            return;
+        }
+
+        let playing = state.spotify.context.as_ref().and_then(|c| c.uri.as_deref());
+        for playlist in &state.spotify.playlists {
+            let content = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
+            let name = label("playlist-name");
+            name.set_text(&playlist.name);
+            name.set_hexpand(true);
+            content.append(&name);
+            if let Some(total) = playlist.tracks {
+                let count = label("playlist-count");
+                count.set_text(&total.to_string());
+                content.append(&count);
+            }
+
+            let row = gtk4::Button::new();
+            row.add_css_class("playlist");
+            row.add_css_class("flat");
+            row.set_child(Some(&content));
+            if Some(playlist.uri.as_str()) == playing {
+                row.add_css_class("active");
+            }
+
+            let client = Rc::clone(&self.client);
+            let uri = playlist.uri.clone();
+            let popover = self.context.popover();
+            row.connect_clicked(move |_| {
+                client.send(Command::PlayContext { uri: uri.clone() });
+                if let Some(popover) = &popover {
+                    popover.popdown();
+                }
+            });
+            self.playlist_list.append(&row);
+        }
     }
 
     /// Mark an episode as one.
@@ -1513,6 +1605,69 @@ mod tests {
         state.spotify.context.as_mut().unwrap().kind = ContextKind::Album;
         ui.render(&state);
         assert_eq!(ui.context_label.text(), "Playing from album");
+
+        // The picker is how you change what you are playing from, so it is
+        // there whenever the account can start something, including when
+        // nothing is playing from anywhere. That is exactly when you want it.
+        state.caps.can_transfer = true;
+        ui.render(&state);
+        assert!(ui.context.is_visible());
+        assert!(ui.context.is_sensitive());
+
+        state.spotify.context = None;
+        ui.render(&state);
+        assert!(ui.context.is_visible(), "still offered with nothing playing from anywhere");
+        assert_eq!(ui.context_label.text(), "Play from");
+        assert!(!ui.context_name.is_visible(), "and no name, rather than an empty line");
+
+        // A free account cannot write to /me/player, so the list would only
+        // fail. Shown and inert rather than vanishing, since its absence would
+        // read as the feature not existing.
+        state.caps.can_transfer = false;
+        ui.render(&state);
+        assert!(!ui.context.is_sensitive());
+
+        state.caps.can_transfer = true;
+        state.spotify.playlists = vec![
+            waytify_ipc::Playlist {
+                name: "Late night".into(),
+                uri: "spotify:playlist:a".into(),
+                tracks: Some(42),
+            },
+            waytify_ipc::Playlist {
+                name: "Runs".into(),
+                uri: "spotify:playlist:b".into(),
+                tracks: None,
+            },
+        ];
+        state.spotify.context = Some(PlayContext {
+            kind: ContextKind::Playlist,
+            name: "Late night".into(),
+            uri: Some("spotify:playlist:a".into()),
+            url: None,
+        });
+        ui.render(&state);
+
+        let mut names = Vec::new();
+        let mut active = Vec::new();
+        let mut child = ui.playlist_list.first_child();
+        while let Some(row) = child {
+            active.push(row.has_css_class("active"));
+            let name = row
+                .first_child()
+                .and_then(|c| c.first_child())
+                .and_then(|w| w.downcast::<gtk4::Label>().ok())
+                .expect("every row leads with its name");
+            names.push(name.text().to_string());
+            child = row.next_sibling();
+        }
+        assert_eq!(names, ["Late night", "Runs"]);
+        // The one you are already playing is marked, so the list says where you
+        // are as well as where you could go.
+        assert_eq!(active, [true, false]);
+
+        state.spotify.playlists.clear();
+        state.spotify.context = None;
 
         // An episode says so, and its show name is marked as one.
         let podcast = song(MediaKind::Podcast);

@@ -120,6 +120,16 @@ pub enum MediaKind {
     Podcast,
 }
 
+/// One of the user's own playlists, enough to show it and to start it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Playlist {
+    pub name: String,
+    pub uri: String,
+    /// How many tracks, when Spotify says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tracks: Option<u32>,
+}
+
 /// Where playback is coming from, when Spotify says.
 ///
 /// MPRIS has no idea about this. A player knows what it is playing, not what it
@@ -319,6 +329,11 @@ pub struct Spotify {
     /// Full scope only. What the current track was played out of.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context: Option<PlayContext>,
+    /// Full scope only, and only once something has asked for them. Fetched
+    /// when the picker opens rather than on a timer: a playlist list is a thing
+    /// you go looking for, not something that needs to be current.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub playlists: Vec<Playlist>,
 }
 
 impl Default for Spotify {
@@ -331,6 +346,7 @@ impl Default for Spotify {
             library_available: true,
             active_device: None,
             context: None,
+            playlists: Vec::new(),
         }
     }
 }
@@ -341,6 +357,7 @@ impl Spotify {
             && self.devices.is_empty()
             && self.queue.is_empty()
             && self.context.is_none()
+            && self.playlists.is_empty()
     }
 
     /// True when writes to `/me/player/*` are expected to succeed.

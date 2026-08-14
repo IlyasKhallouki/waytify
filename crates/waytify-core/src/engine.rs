@@ -58,6 +58,8 @@ enum PlayerEvent {
     Queue(Vec<waytify_ipc::Track>),
     /// The playlist or album the current track came out of.
     Context(Option<waytify_ipc::PlayContext>),
+    /// The user's own playlists.
+    Playlists(Vec<waytify_ipc::Playlist>),
     /// Lyrics finished downloading, or turned out not to exist. Carries the key
     /// they were fetched for, since the track can change while a request is out.
     Lyrics {
@@ -455,6 +457,12 @@ impl Engine {
                     self.publish();
                 }
             }
+            PlayerEvent::Playlists(playlists) => {
+                if self.state.spotify.playlists != playlists {
+                    self.state.spotify.playlists = playlists;
+                    self.publish();
+                }
+            }
             PlayerEvent::Queue(queue) => {
                 // The round trip outlives the track it was asked about, so the
                 // player may have moved on to something that is not Spotify's.
@@ -627,6 +635,26 @@ impl Engine {
                     let _ = events.send(PlayerEvent::Context(context)).await;
                 }
                 Err(e) => tracing::debug!("could not read the playing context: {e:#}"),
+            }
+        });
+    }
+
+    /// Fetch the user's playlists.
+    ///
+    /// Only when something asks. A playlist list is a thing you go looking for,
+    /// so it is fetched when the picker opens rather than kept current against
+    /// a clock nobody is watching.
+    fn request_playlists(&self) {
+        let Some(client) = &self.spotify else { return };
+        let client = Arc::clone(client);
+        let events = self.events_tx.clone();
+
+        tokio::spawn(async move {
+            match client.lock().await.playlists().await {
+                Ok(playlists) => {
+                    let _ = events.send(PlayerEvent::Playlists(playlists)).await;
+                }
+                Err(e) => tracing::warn!("could not read your playlists: {e:#}"),
             }
         });
     }
@@ -1034,6 +1062,19 @@ impl Engine {
                     }
                 });
             }
+            Command::PlayContext { uri } => {
+                let client = self
+                    .spotify
+                    .clone()
+                    .ok_or_else(|| anyhow::anyhow!("no Spotify account connected"))?;
+                let uri = uri.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = client.lock().await.play_context(&uri).await {
+                        tracing::warn!("could not start that: {e:#}");
+                    }
+                });
+            }
+            Command::RefreshPlaylists => self.request_playlists(),
             Command::RefreshDevices => self.request_devices(),
             Command::ToggleLike => {
                 let client = self
