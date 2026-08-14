@@ -46,9 +46,15 @@ is a file you can edit while the window is open.
 
 ## Install
 
-Requires Rust 1.92 or newer, which is what the GTK4 bindings need. A build
-without the window (`--no-default-features`) has the same floor today but does
-not depend on GTK at all.
+On Arch, from the [AUR](https://aur.archlinux.org/packages/waytify):
+
+```sh
+paru -S waytify     # or yay, or makepkg -si in a clone of the AUR repo
+```
+
+Anywhere else, build it. Requires Rust 1.92 or newer, which is what the GTK4
+bindings need. A build without the window (`--no-default-features`) has the same
+floor today but does not depend on GTK at all.
 
 ```sh
 git clone https://github.com/IlyasKhallouki/waytify
@@ -56,7 +62,9 @@ cd waytify
 cargo install --path crates/waytify
 ```
 
-That puts a single `waytify` binary in `~/.cargo/bin`.
+That puts a single `waytify` binary in `~/.cargo/bin`. The AUR package installs
+it to `/usr/bin`, which is already on Waybar's PATH and saves you the step
+below.
 
 ### Make sure Waybar can find it
 

@@ -15,7 +15,7 @@ depends=('gtk4' 'gtk4-layer-shell' 'dbus' 'libpulse')
 makedepends=('cargo')
 optdepends=('waybar: the bar module, which is what most people came for')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('SKIP')
+sha256sums=('fb4c1e30fe8bd1cc1c8b07389b6c5f08b9eabc58dc1671ecc4b59175e8eb72fe')
 
 prepare() {
   cd "$pkgname-$pkgver"
@@ -51,4 +51,7 @@ package() {
     "$pkgdir/usr/share/doc/$pkgname/custom-waytify.jsonc"
   install -Dm0644 contrib/waybar/waytify.css \
     "$pkgdir/usr/share/doc/$pkgname/waytify.css"
+  # A worked theme, which is the fastest way to see what the art colours do.
+  install -Dm0644 contrib/themes/burning-cherry.css \
+    "$pkgdir/usr/share/doc/$pkgname/themes/burning-cherry.css"
 }
