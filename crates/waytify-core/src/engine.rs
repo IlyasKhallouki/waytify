@@ -64,6 +64,8 @@ enum PlayerEvent {
     Search(Vec<waytify_ipc::SearchResult>),
     /// What was played recently.
     Recent(Vec<waytify_ipc::Track>),
+    /// The stored login is older than a scope this build needs.
+    NeedsLogin,
     /// Everything in the playlist or album being played, or a refusal.
     ContextTracks(std::result::Result<Vec<waytify_ipc::Track>, ()>),
     /// Lyrics finished downloading, or turned out not to exist. Carries the key
@@ -482,6 +484,12 @@ impl Engine {
                     self.publish();
                 }
             }
+            PlayerEvent::NeedsLogin => {
+                if !self.state.spotify.needs_login {
+                    self.state.spotify.needs_login = true;
+                    self.publish();
+                }
+            }
             PlayerEvent::Recent(recent) => {
                 if self.state.spotify.recent != recent {
                     self.state.spotify.recent = recent;
@@ -687,11 +695,21 @@ impl Engine {
         let events = self.events_tx.clone();
 
         tokio::spawn(async move {
-            match client.lock().await.playlists().await {
+            let mut guard = client.lock().await;
+            let result = guard.playlists().await;
+            let stale = guard.needs_reauthorization();
+            drop(guard);
+
+            match result {
                 Ok(playlists) => {
                     let _ = events.send(PlayerEvent::Playlists(playlists)).await;
                 }
-                Err(e) => tracing::warn!("could not read your playlists: {e:#}"),
+                Err(e) => {
+                    tracing::warn!("could not read your playlists: {e:#}");
+                    if stale {
+                        let _ = events.send(PlayerEvent::NeedsLogin).await;
+                    }
+                }
             }
         });
     }
@@ -725,11 +743,21 @@ impl Engine {
         let events = self.events_tx.clone();
 
         tokio::spawn(async move {
-            match client.lock().await.recently_played().await {
+            let mut guard = client.lock().await;
+            let result = guard.recently_played().await;
+            let stale = guard.needs_reauthorization();
+            drop(guard);
+
+            match result {
                 Ok(recent) => {
                     let _ = events.send(PlayerEvent::Recent(recent)).await;
                 }
-                Err(e) => tracing::warn!("could not read recently played: {e:#}"),
+                Err(e) => {
+                    tracing::warn!("could not read recently played: {e:#}");
+                    if stale {
+                        let _ = events.send(PlayerEvent::NeedsLogin).await;
+                    }
+                }
             }
         });
     }

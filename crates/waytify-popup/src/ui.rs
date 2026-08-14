@@ -76,6 +76,10 @@ struct TrackSection {
     /// Whether those rows were built playable. Part of the rebuild condition,
     /// since the same list can become playable a moment after it arrives.
     playable: Cell<bool>,
+    /// The message last shown in place of rows, so a change of reason redraws.
+    /// Whether the list is empty is not the only thing that can change about an
+    /// empty list.
+    listed_empty: std::cell::RefCell<String>,
 }
 
 impl TrackSection {
@@ -124,6 +128,7 @@ impl TrackSection {
             list,
             listed: std::cell::RefCell::new(Vec::new()),
             playable: Cell::new(false),
+            listed_empty: std::cell::RefCell::new(String::new()),
         }
     }
 
@@ -147,14 +152,20 @@ impl TrackSection {
         while let Some(child) = self.list.first_child() {
             self.list.remove(&child);
         }
+        self.note(message);
+        // What is on screen is no longer what was listed, so the next real list
+        // has to rebuild rather than deciding nothing has changed.
+        self.listed.borrow_mut().clear();
+        self.listed_empty.borrow_mut().clear();
+    }
+
+    fn note(&self, message: &str) {
         let note = label("tracklist-note");
         note.set_text(message);
         note.set_ellipsize(gtk4::pango::EllipsizeMode::None);
         note.set_wrap(true);
+        note.set_max_width_chars(40);
         self.list.append(&note);
-        // The rows no longer match what is listed, so the next real list has to
-        // rebuild rather than deciding nothing has changed.
-        self.listed.borrow_mut().clear();
     }
 
     /// Fill the rows, if what is in them has changed.
@@ -170,6 +181,7 @@ impl TrackSection {
         tracks: &[waytify_ipc::Track],
         offered: bool,
         playable: bool,
+        empty: &str,
         client: &Rc<Client>,
         command: F,
     ) where
@@ -184,13 +196,29 @@ impl TrackSection {
             self.toggle.set_active(false);
         }
 
-        if self.listed.borrow().as_slice() == tracks && self.playable.get() == playable {
+        // The message counts as part of what is drawn. An empty list whose
+        // reason for being empty has changed still has to be redrawn, and that
+        // is the whole of the bug this guard used to cause: the first render
+        // compared an empty list to an empty list, decided nothing had changed,
+        // and left the section blank rather than saying why.
+        if self.listed.borrow().as_slice() == tracks
+            && self.playable.get() == playable
+            && *self.listed_empty.borrow() == empty
+        {
             return;
         }
         self.playable.set(playable);
+        *self.listed_empty.borrow_mut() = empty.to_string();
 
         while let Some(child) = self.list.first_child() {
             self.list.remove(&child);
+        }
+
+        if tracks.is_empty() {
+            if !empty.is_empty() {
+                self.note(empty);
+            }
+            return;
         }
 
         for track in tracks {
@@ -242,6 +270,10 @@ pub struct Ui {
     /// Playlists as last listed, so the popover is not rebuilt under the pointer
     /// on every state frame.
     listed_playlists: std::cell::RefCell<Vec<waytify_ipc::Playlist>>,
+    /// Whether the popover has been filled once. Without it the first render
+    /// compares an empty list to an empty list, decides nothing has changed,
+    /// and never builds anything, so the popover opens completely blank.
+    playlists_built: Cell<bool>,
     art: gtk4::Image,
     art_placeholder: gtk4::Box,
     title: gtk4::Label,
@@ -347,7 +379,9 @@ impl Ui {
         context.add_css_class("waytify-context");
         context.add_css_class("flat");
         context.set_child(Some(&lines));
-        context.set_hexpand(true);
+        // Not hexpand. Stretched across the window with no playlist name in it,
+        // the filled state of an open menu button reads as an empty text field.
+        context.set_halign(gtk4::Align::Start);
 
         let playlists = gtk4::Popover::new();
         playlists.add_css_class("waytify-playlists");
@@ -610,6 +644,7 @@ impl Ui {
             context_name,
             playlist_list,
             listed_playlists: std::cell::RefCell::new(Vec::new()),
+            playlists_built: Cell::new(false),
             search,
             search_entry,
             search_list,
@@ -1004,9 +1039,11 @@ impl Ui {
             *self.listed_search.borrow_mut() = state.spotify.search.clone();
         }
 
-        if *self.listed_playlists.borrow() != state.spotify.playlists {
+        if !self.playlists_built.get() || *self.listed_playlists.borrow() != state.spotify.playlists
+        {
             self.rebuild_playlists(state);
             *self.listed_playlists.borrow_mut() = state.spotify.playlists.clone();
+            self.playlists_built.set(true);
         }
     }
 
@@ -1084,7 +1121,11 @@ impl Ui {
 
         if state.spotify.playlists.is_empty() {
             let empty = label("playlists-empty");
-            empty.set_text("No playlists yet. If you have some, your login may\npredate this feature: run waytify login again.");
+            empty.set_text(if state.spotify.needs_login {
+                "Your Spotify login predates this feature.\nRun waytify login again to list your playlists."
+            } else {
+                "No playlists here yet."
+            });
             empty.set_ellipsize(gtk4::pango::EllipsizeMode::None);
             self.playlist_list.append(&empty);
             return;
@@ -1310,7 +1351,9 @@ impl Ui {
             && state.spotify.context.as_ref().is_some_and(|c| c.is_addressable());
         // The queue arrives unasked for, so an empty one means there is nothing
         // to say and the section goes away.
-        self.queue.render(upcoming, !upcoming.is_empty(), playable, &self.client, |uri| {
+        // The queue arrives unasked for, so an empty one has nothing to
+        // explain: the section simply goes away.
+        self.queue.render(upcoming, !upcoming.is_empty(), playable, "", &self.client, |uri| {
             Command::PlayQueued { uri }
         });
 
@@ -1325,6 +1368,7 @@ impl Ui {
             &state.spotify.context_tracks,
             addressable,
             playable,
+            "",
             &self.client,
             |uri| Command::PlayQueued { uri },
         );
@@ -1339,10 +1383,18 @@ impl Ui {
         let recent = &state.spotify.recent[..state.spotify.recent.len().min(QUEUE_ROWS)];
         // Recently played is fetched when it is opened, so it has to be there
         // to open. Offered whenever there is an account to ask.
+        // Empty means one of two things and the daemon knows which, so it says
+        // which rather than leaving an open panel with nothing in it.
+        let nothing_yet = if state.spotify.needs_login {
+            "Your Spotify login predates this feature.\nRun waytify login again to see this."
+        } else {
+            "Nothing played recently."
+        };
         self.recent.render(
             recent,
             state.spotify.authorized,
             state.caps.can_transfer,
+            nothing_yet,
             &self.client,
             |uri| Command::PlayTrack { uri },
         );
@@ -1970,6 +2022,27 @@ mod tests {
         ui.render(state);
         assert!(ui.recent.root.is_visible(), "offered while still empty, or it cannot be opened");
         assert!(!ui.recent.toggle.is_active());
+
+        // An empty section has to say why, or it opens onto nothing and looks
+        // broken. This is the case the first render used to skip entirely, by
+        // comparing an empty list against an empty list and deciding nothing
+        // had changed.
+        let note = |ui: &Ui| {
+            ui.recent
+                .list
+                .first_child()
+                .and_then(|w| w.downcast::<gtk4::Label>().ok())
+                .map(|l| l.text().to_string())
+                .unwrap_or_default()
+        };
+        assert!(note(ui).contains("Nothing played"), "got {:?}", note(ui));
+
+        // And when the daemon knows the login is too old, it says that instead,
+        // which is the difference between a dead end and an instruction.
+        state.spotify.needs_login = true;
+        ui.render(state);
+        assert!(note(ui).contains("waytify login"), "got {:?}", note(ui));
+        state.spotify.needs_login = false;
 
         state.caps.can_transfer = true;
         state.spotify.recent = vec![Track {

@@ -79,6 +79,21 @@
   background-color: alpha(@ink, 0.06);
 }
 
+/* GTK fills a menu button while its popover is open, which on a full width
+ * control reads as an empty text field rather than as a pressed button. */
+.waytify-context:checked,
+.waytify-context:active {
+  background-color: alpha(@pink, 0.12);
+  box-shadow: none;
+}
+
+/* Only as wide as it needs to be. Stretched across the window it looked like
+ * an input waiting to be typed into. */
+.waytify-context .context-label,
+.waytify-context .context-name {
+  padding-right: 8px;
+}
+
 .waytify-context .context-label {
   font-size: 10px;
   font-weight: 700;

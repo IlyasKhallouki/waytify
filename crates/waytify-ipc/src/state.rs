@@ -379,6 +379,14 @@ pub struct Spotify {
     /// Everything in the playlist or album being played, once asked for.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub context_tracks: Vec<Track>,
+    /// Set when the stored login predates a scope this build needs.
+    ///
+    /// Every feature that arrived after the first login added a scope, and a
+    /// refresh token issued before it cannot grant one. The only fix is logging
+    /// in again, so the lists that come back empty say that rather than looking
+    /// broken.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub needs_login: bool,
     /// Set when Spotify refused to say what is in the current context.
     ///
     /// Its own algorithmic playlists answer 404 to any request for their
@@ -403,6 +411,7 @@ impl Default for Spotify {
             recent: Vec::new(),
             context_tracks: Vec::new(),
             context_closed: false,
+            needs_login: false,
         }
     }
 }
