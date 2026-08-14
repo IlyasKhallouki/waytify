@@ -92,6 +92,13 @@ pub struct Client {
     next_allowed: Instant,
     /// Set when Spotify has told us to back off, and honoured until it passes.
     throttled_until: Option<Instant>,
+    /// How many times in a row Spotify has refused for rate limiting.
+    ///
+    /// Retry-After says how long this request should wait. It does not say that
+    /// waiting exactly that long again, over and over, is a good idea: a client
+    /// that keeps returning at the earliest permitted moment is the one that
+    /// stays throttled. Each consecutive refusal doubles the floor.
+    throttle_strikes: u32,
     premium: Option<bool>,
     /// Context names by uri, so playing a whole playlist asks once rather than
     /// once per track.
@@ -113,6 +120,7 @@ impl Client {
             tokens: None,
             next_allowed: Instant::now(),
             throttled_until: None,
+            throttle_strikes: 0,
             premium: None,
             context_names: std::collections::HashMap::new(),
             library_forbidden: false,
@@ -169,6 +177,10 @@ impl Client {
             }
             self.throttled_until = None;
         }
+        // A request that got through means whatever the limit was is over.
+        if self.throttled_until.is_none() {
+            self.throttle_strikes = 0;
+        }
 
         let now = Instant::now();
         if now < self.next_allowed {
@@ -185,16 +197,15 @@ impl Client {
         let response = request.send().await.with_context(|| format!("calling {path}"))?;
 
         if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
-            // Honouring Retry-After rather than retrying blind is the difference
-            // between backing off and making it worse.
-            let wait = response
+            let retry_after = response
                 .headers()
                 .get(reqwest::header::RETRY_AFTER)
                 .and_then(|v| v.to_str().ok())
-                .and_then(|v| v.parse::<u64>().ok())
-                .unwrap_or(5);
-            self.throttled_until = Some(Instant::now() + Duration::from_secs(wait));
-            bail!("rate limited by Spotify, backing off for {wait}s");
+                .and_then(|v| v.parse::<u64>().ok());
+            self.throttle_strikes = self.throttle_strikes.saturating_add(1);
+            let wait = backoff(retry_after, self.throttle_strikes);
+            self.throttled_until = Some(Instant::now() + wait);
+            bail!("rate limited by Spotify, backing off for {}s", wait.as_secs());
         }
 
         Ok(response)
@@ -262,10 +273,14 @@ impl Client {
     }
 
     /// Whether a track is in the user's library.
-    pub async fn is_saved(&mut self, track_id: &str) -> Result<bool> {
-        let response = self
-            .request(reqwest::Method::GET, &format!("/me/tracks/contains?ids={track_id}"), None)
-            .await?;
+    /// Whether an item is in the user's library.
+    ///
+    /// `/me/library/contains` rather than `/me/tracks/contains`: it takes full
+    /// URIs and covers episodes as well as tracks, so podcasts need no second
+    /// code path.
+    pub async fn is_saved(&mut self, uri: &str) -> Result<bool> {
+        let path = format!("/me/library/contains?uris={}", urlencode(uri));
+        let response = self.request(reqwest::Method::GET, &path, None).await?;
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
 
@@ -282,13 +297,14 @@ impl Client {
         }
 
         let saved: Vec<bool> = serde_json::from_str(&body)
-            .with_context(|| format!("unexpected saved-track response: {body}"))?;
+            .with_context(|| format!("unexpected library response: {body}"))?;
         Ok(saved.first().copied().unwrap_or(false))
     }
 
-    pub async fn set_saved(&mut self, track_id: &str, saved: bool) -> Result<()> {
+    pub async fn set_saved(&mut self, uri: &str, saved: bool) -> Result<()> {
         let method = if saved { reqwest::Method::PUT } else { reqwest::Method::DELETE };
-        let response = self.request(method, &format!("/me/tracks?ids={track_id}"), None).await?;
+        let path = format!("/me/library?uris={}", urlencode(uri));
+        let response = self.request(method, &path, None).await?;
         let status = response.status();
         if status == reqwest::StatusCode::FORBIDDEN {
             self.library_forbidden = true;
@@ -396,6 +412,26 @@ impl Client {
     }
 }
 
+/// How long to wait after being refused for rate limiting.
+///
+/// Never less than the `Retry-After` Spotify sent, which is the part that is not
+/// a guess. On top of that each consecutive refusal doubles a floor, because a
+/// client that comes back at the earliest permitted moment every time is the one
+/// that stays throttled. Capped so a long quiet period is not punished forever.
+fn backoff(retry_after: Option<u64>, strikes: u32) -> Duration {
+    const CAP: u64 = 300;
+    let floor = 5u64.saturating_mul(1 << strikes.min(6).saturating_sub(1));
+    Duration::from_secs(retry_after.unwrap_or(5).max(floor).min(CAP))
+}
+
+/// Percent-encode a Spotify URI for a query string.
+///
+/// The colons in `spotify:track:{id}` are safe unencoded but not every proxy
+/// agrees, and the id itself is base62 so nothing else needs escaping.
+fn urlencode(uri: &str) -> String {
+    uri.replace(':', "%3A")
+}
+
 /// Whether a queue response means "there is nothing queued" rather than carrying
 /// a queue or reporting a failure.
 ///
@@ -431,6 +467,39 @@ mod tests {
         // Spotify really does return devices with no id, which cannot be
         // transferred to and must not be offered as if they could.
         assert!(parsed.devices[1].id.is_none());
+    }
+
+    #[test]
+    fn backing_off_never_undercuts_what_spotify_asked_for() {
+        // Retry-After is the part that is not a guess, so it is a floor.
+        assert_eq!(backoff(Some(30), 1), Duration::from_secs(30));
+        assert_eq!(backoff(Some(2), 1), Duration::from_secs(5), "and 5s is our own floor");
+
+        // Each consecutive refusal doubles that floor. Coming back at the
+        // earliest permitted moment every time is what keeps a client throttled.
+        assert!(backoff(None, 3) > backoff(None, 2));
+        assert!(backoff(None, 4) > backoff(None, 3));
+
+        // The doubling stops, so a bad afternoon does not turn into an hour of
+        // silence.
+        assert_eq!(backoff(None, 30), backoff(None, 6));
+        assert!(backoff(None, 30) <= Duration::from_secs(300));
+
+        // And an implausible Retry-After is bounded rather than trusted. A day
+        // of waiting is a bug at the other end, not an instruction.
+        assert_eq!(backoff(Some(86_400), 1), Duration::from_secs(300));
+    }
+
+    #[test]
+    fn a_library_uri_survives_a_query_string() {
+        assert_eq!(
+            urlencode("spotify:track:4uLU6hMCjMI75M1A2tKUQC"),
+            "spotify%3Atrack%3A4uLU6hMCjMI75M1A2tKUQC"
+        );
+        assert_eq!(
+            urlencode("spotify:episode:5vHwCgvNqDDPLTAfsvOTGw"),
+            "spotify%3Aepisode%3A5vHwCgvNqDDPLTAfsvOTGw"
+        );
     }
 
     #[test]

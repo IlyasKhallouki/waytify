@@ -349,6 +349,16 @@ waytify login
 That opens a browser, catches the redirect on a local port, and stores a refresh
 token in your system keyring rather than in a file. `waytify logout` forgets it.
 
+### Caching and attribution
+
+Album covers are cached under `~/.cache/waytify/art/` as 256px thumbnails, which
+is what makes reopening the window instant rather than a network round trip. That
+is the only Spotify content kept on disk. Track names, playlist names and device
+lists are held in memory for as long as they are on screen and nowhere else.
+
+Content comes from Spotify and belongs to Spotify. waytify is not affiliated
+with them.
+
 ### Development mode and the user allowlist
 
 A new application starts in development mode, and in that state Spotify only

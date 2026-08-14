@@ -71,15 +71,32 @@ pub fn is_podcast(track: &waytify_ipc::Track) -> bool {
         || track.url.as_deref().is_some_and(marks_episode)
 }
 
+/// The Spotify URI for what is playing, for the library endpoints.
+///
+/// `/me/library` and `/me/library/contains` take full URIs rather than bare
+/// ids, which is what lets one pair of calls cover songs and episodes instead of
+/// a separate endpoint per type.
+pub fn spotify_uri(track: &waytify_ipc::Track) -> Option<String> {
+    let id = spotify_catalogue_id(track)?;
+    let kind = match track.kind {
+        waytify_ipc::MediaKind::Podcast => "episode",
+        waytify_ipc::MediaKind::Music => "track",
+    };
+    Some(format!("spotify:{kind}:{id}"))
+}
+
 /// The Spotify catalogue id for a track, when this looks like a Spotify track.
 ///
 /// Prefers `xesam:url` because it is a documented public URL. Falls back to the
 /// trailing segment of `mpris:trackid`, which Spotify formats as
 /// `/com/spotify/track/<id>`. Returns `None` for anything else, which is how a
 /// local file or another player stays out of the Web API code paths entirely.
-pub fn spotify_track_id(track: &Track) -> Option<String> {
+pub fn spotify_catalogue_id(track: &Track) -> Option<String> {
+    // Either kind of item, since the library endpoints take both and the id
+    // itself is the same shape.
+    let prefixes = ["https://open.spotify.com/track/", "https://open.spotify.com/episode/"];
     if let Some(url) = &track.url
-        && let Some(rest) = url.strip_prefix("https://open.spotify.com/track/")
+        && let Some(rest) = prefixes.iter().find_map(|p| url.strip_prefix(p))
     {
         let id = rest.split(['?', '#', '/']).next().unwrap_or(rest);
         if is_base62(id) {
@@ -246,6 +263,35 @@ mod tests {
     }
 
     #[test]
+    fn a_library_uri_names_the_kind_of_item() {
+        use waytify_ipc::MediaKind;
+
+        let song = Track {
+            url: Some("https://open.spotify.com/track/4uLU6hMCjMI75M1A2tKUQC".into()),
+            ..Track::default()
+        };
+        assert_eq!(spotify_uri(&song).as_deref(), Some("spotify:track:4uLU6hMCjMI75M1A2tKUQC"));
+
+        // The same call saves an episode, which is why the kind has to reach
+        // the URI rather than being assumed to be a track.
+        let episode = Track {
+            url: Some("https://open.spotify.com/episode/5vHwCgvNqDDPLTAfsvOTGw".into()),
+            kind: MediaKind::Podcast,
+            ..Track::default()
+        };
+        assert_eq!(
+            spotify_uri(&episode).as_deref(),
+            Some("spotify:episode:5vHwCgvNqDDPLTAfsvOTGw")
+        );
+
+        // Nothing from Spotify has no URI, so the save button stays hidden
+        // rather than pointing at something that cannot exist.
+        let elsewhere =
+            Track { url: Some("https://youtube.com/watch?v=x".into()), ..Track::default() };
+        assert_eq!(spotify_uri(&elsewhere), None);
+    }
+
+    #[test]
     fn an_episode_is_told_apart_from_a_song() {
         use waytify_ipc::MediaKind;
 
@@ -281,14 +327,14 @@ mod tests {
     #[test]
     fn spotify_id_comes_from_the_public_url_first() {
         let t = track_from_metadata(&spotify_like()).unwrap();
-        assert_eq!(spotify_track_id(&t).as_deref(), Some("4uLU6hMCjMI75M1A2tKUQC"));
+        assert_eq!(spotify_catalogue_id(&t).as_deref(), Some("4uLU6hMCjMI75M1A2tKUQC"));
     }
 
     #[test]
     fn spotify_id_falls_back_to_the_trackid_path() {
         let mut t = track_from_metadata(&spotify_like()).unwrap();
         t.url = None;
-        assert_eq!(spotify_track_id(&t).as_deref(), Some("4uLU6hMCjMI75M1A2tKUQC"));
+        assert_eq!(spotify_catalogue_id(&t).as_deref(), Some("4uLU6hMCjMI75M1A2tKUQC"));
     }
 
     #[test]
@@ -299,7 +345,7 @@ mod tests {
             ("xesam:title", Value::from("A local file")),
         ]);
         let t = track_from_metadata(&m).unwrap();
-        assert_eq!(spotify_track_id(&t), None);
+        assert_eq!(spotify_catalogue_id(&t), None);
     }
 
     #[test]
@@ -307,7 +353,7 @@ mod tests {
         let mut t = track_from_metadata(&spotify_like()).unwrap();
         t.url = Some("https://open.spotify.com/track/short".into());
         t.id = None;
-        assert_eq!(spotify_track_id(&t), None, "wrong length should not reach the API");
+        assert_eq!(spotify_catalogue_id(&t), None, "wrong length should not reach the API");
     }
 
     #[test]

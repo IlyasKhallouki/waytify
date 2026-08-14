@@ -24,4 +24,4 @@ pub use clock::{Attention, PositionClock};
 pub use config::Config;
 pub use engine::{Engine, EngineMsg};
 pub use format::render_bar;
-pub use metadata::{Metadata, spotify_track_id, track_from_metadata};
+pub use metadata::{Metadata, spotify_catalogue_id, track_from_metadata};

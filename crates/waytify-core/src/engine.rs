@@ -424,7 +424,7 @@ impl Engine {
             PlayerEvent::Properties(changed) => self.apply_properties(changed).await,
             PlayerEvent::Liked { track_id, liked } => {
                 // The song may have changed while the answer was in flight.
-                let current = self.state.track().and_then(crate::metadata::spotify_track_id);
+                let current = self.state.track().and_then(crate::metadata::spotify_uri);
                 if current.as_deref() != Some(track_id.as_str()) {
                     return;
                 }
@@ -541,19 +541,19 @@ impl Engine {
             return;
         }
         let (Some(client), Some(track)) = (&self.spotify, self.state.track()) else { return };
-        let Some(track_id) = crate::metadata::spotify_track_id(track) else { return };
+        let Some(uri) = crate::metadata::spotify_uri(track) else { return };
 
         let client = Arc::clone(client);
         let events = self.events_tx.clone();
         tokio::spawn(async move {
             let mut guard = client.lock().await;
-            let liked = guard.is_saved(&track_id).await;
+            let liked = guard.is_saved(&uri).await;
             let available = guard.library_available();
             drop(guard);
 
             match liked {
                 Ok(liked) => {
-                    let _ = events.send(PlayerEvent::Liked { track_id, liked }).await;
+                    let _ = events.send(PlayerEvent::Liked { track_id: uri, liked }).await;
                 }
                 Err(e) => {
                     tracing::debug!("could not read the saved state: {e:#}");
@@ -931,13 +931,11 @@ impl Engine {
             // id, and a YouTube video in a browser tab has none. Showing the
             // control for one would be offering something that can only fail.
             //
-            // Episodes are excluded for the same reason. Spotify saves them
-            // through a different endpoint from tracks, so the button would
-            // reach for the wrong one.
+            // Episodes included: /me/library takes a URI of either kind, so
+            // saving one is the same call rather than a separate code path.
             can_like: self.state.spotify.authorized
                 && self.state.spotify.library_available
-                && self.state.track().map(|t| t.kind) != Some(waytify_ipc::MediaKind::Podcast)
-                && self.state.track().and_then(crate::metadata::spotify_track_id).is_some(),
+                && self.state.track().and_then(crate::metadata::spotify_uri).is_some(),
             can_transfer: self.state.spotify.can_control_remote(),
             can_set_volume: self.state.audio.route != waytify_ipc::VolumeRoute::Unavailable,
             show_free_account_notice: self.state.spotify.authorized
@@ -1023,20 +1021,21 @@ impl Engine {
                     .clone()
                     .ok_or_else(|| anyhow::anyhow!("no Spotify account connected"))?;
                 let track = self.state.track().ok_or_else(|| anyhow::anyhow!("nothing playing"))?;
-                let track_id = crate::metadata::spotify_track_id(track)
+                let uri = crate::metadata::spotify_uri(track)
                     .ok_or_else(|| anyhow::anyhow!("this track is not from Spotify"))?;
                 let wanted = !track.liked.unwrap_or(false);
 
                 let events = self.events_tx.clone();
                 tokio::spawn(async move {
                     let mut guard = client.lock().await;
-                    match guard.set_saved(&track_id, wanted).await {
+                    match guard.set_saved(&uri, wanted).await {
                         // Report what was asked for rather than reading it back:
                         // the library is eventually consistent and an immediate
                         // re-read often still says the old value.
                         Ok(()) => {
-                            let _ =
-                                events.send(PlayerEvent::Liked { track_id, liked: wanted }).await;
+                            let _ = events
+                                .send(PlayerEvent::Liked { track_id: uri, liked: wanted })
+                                .await;
                         }
                         Err(e) => tracing::warn!("could not change the saved state: {e:#}"),
                     }
@@ -1204,7 +1203,7 @@ fn as_str<'a>(v: &'a zbus::zvariant::Value<'a>) -> Option<&'a str> {
 /// name of the attached player: playback on a phone over Connect has no local
 /// MPRIS player at all, and the queue is still real in that case.
 fn current_is_spotify(state: &State) -> bool {
-    state.track().and_then(crate::metadata::spotify_track_id).is_some()
+    state.track().and_then(crate::metadata::spotify_catalogue_id).is_some()
 }
 
 fn as_bool(v: &zbus::zvariant::Value<'_>) -> Option<bool> {
